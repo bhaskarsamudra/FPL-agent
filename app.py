@@ -12,7 +12,6 @@ from google.genai import types
 # 1. SETUP & CREDENTIALS
 # -------------------------------------------------------------
 st.set_page_config(page_title="FPL AI Strategist", page_icon="⚽", layout="wide")
-st.title("⚽ FPL AI Strategist")
 
 GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY")
 GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
@@ -137,17 +136,19 @@ def fetch_base_fpl_data():
 
     all_players_pool = []
     elements_detail = {}
-    price_risers = []
-    price_fallers = []
+    risers_list = []
+    fallers_list = []
 
     for p in boot["elements"]:
         pos_str = ["GK", "DEF", "MID", "FWD"][p["element_type"] - 1]
         cost = p["now_cost"] / 10
         cost_change = p.get("cost_change_event", 0) / 10
         price_symbol = f"▲ +£{cost_change:.1f}m" if cost_change > 0 else (f"▼ -£{abs(cost_change):.1f}m" if cost_change < 0 else "—")
-        
-        if cost_change > 0: price_risers.append(f"{p['web_name']} ({price_symbol})")
-        if cost_change < 0: price_fallers.append(f"{p['web_name']} ({price_symbol})")
+
+        if cost_change > 0:
+            risers_list.append({"Player": p["web_name"], "Price": f"£{cost:.1f}m", "Delta": f"+£{cost_change:.1f}m"})
+        elif cost_change < 0:
+            fallers_list.append({"Player": p["web_name"], "Price": f"£{cost:.1f}m", "Delta": f"-£{abs(cost_change):.1f}m"})
 
         form_val = float(p.get("form", 0.0) or 0.0)
         xgi_val = float(p.get("expected_goal_involvements", 0.0) or 0.0)
@@ -209,8 +210,8 @@ def fetch_base_fpl_data():
         "free_transfers": free_transfers_available,
         "chips_used": chips_used,
         "elements_detail": elements_detail,
-        "price_risers": price_risers[:6],
-        "price_fallers": price_fallers[:6],
+        "risers_list": risers_list[:6],
+        "fallers_list": fallers_list[:6],
         "world_leader": {
             "name": world_leader["player_name"],
             "team": world_leader["entry_name"],
@@ -218,10 +219,9 @@ def fetch_base_fpl_data():
             "gw_points": world_leader["event_total"]
         },
         "scouting_radar": {
-            "top_xp_forwards": sorted([p for p in all_players_pool if p["pos"] == "FWD"], key=lambda x: x["xp_3gw"], reverse=True)[:6],
-            "top_xp_midfielders": sorted([p for p in all_players_pool if p["pos"] == "MID"], key=lambda x: x["xp_3gw"], reverse=True)[:8],
-            "top_xp_defenders": sorted([p for p in all_players_pool if p["pos"] == "DEF"], key=lambda x: x["xp_3gw"], reverse=True)[:6],
-            "differentials": [p for p in all_players_pool if p["xGI"] >= 1.5 and float(p["selected_by"]) < 10.0][:6]
+            "top_xp_forwards": sorted([p for p in all_players_pool if p["pos"] == "FWD"], key=lambda x: x["xp_3gw"], reverse=True)[:5],
+            "top_xp_midfielders": sorted([p for p in all_players_pool if p["pos"] == "MID"], key=lambda x: x["xp_3gw"], reverse=True)[:6],
+            "top_xp_defenders": sorted([p for p in all_players_pool if p["pos"] == "DEF"], key=lambda x: x["xp_3gw"], reverse=True)[:5]
         }
     }
 
@@ -271,12 +271,10 @@ def fetch_team_pitch_data(team_id: int, gw: int, elements_detail: dict):
     try:
         picks_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{gw}/picks/", headers=HEADERS).json()
         entry_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{team_id}/", headers=HEADERS).json()
-        
-        # Pull gameweek points for this specific GW
+
         gw_points = picks_res.get("entry_history", {}).get("points", 0)
         total_points = entry_res.get("summary_overall_points", 0)
 
-        # Pull per-player points for this specific GW
         live_res = requests.get(f"https://fantasy.premierleague.com/api/event/{gw}/live/", headers=HEADERS).json()
         live_elements = {el["id"]: el["stats"]["total_points"] for el in live_res.get("elements", [])}
 
@@ -287,14 +285,13 @@ def fetch_team_pitch_data(team_id: int, gw: int, elements_detail: dict):
             info = elements_detail.get(p["element"], {})
             pos = info.get("pos", "MID")
             club_code = info.get("club_code", 0)
-            
+
             jersey_suffix = "_1-66.png" if pos == "GK" else "-66.png"
             jersey_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{club_code}{jersey_suffix}"
 
             is_cap = bool(p.get("is_captain"))
             is_vc = bool(p.get("is_vice_captain"))
 
-            # Effective GW points (doubled for captain)
             raw_pts = live_elements.get(p["element"], info.get("event_points", 0))
             calc_pts = raw_pts * (p.get("multiplier", 1) or 1)
 
@@ -306,7 +303,8 @@ def fetch_team_pitch_data(team_id: int, gw: int, elements_detail: dict):
                 "cost": f"£{info.get('cost', 0.0)}m",
                 "jersey_url": jersey_url,
                 "is_captain": is_cap,
-                "is_vice": is_vc
+                "is_vice": is_vc,
+                "xp_3gw": info.get("xp_3gw", 0.0)
             }
             all_squad.append(card)
             if p["position"] <= 11:
@@ -318,7 +316,7 @@ def fetch_team_pitch_data(team_id: int, gw: int, elements_detail: dict):
         formation = f"{len(pitch_data['DEF'])}-{len(pitch_data['MID'])}-{len(pitch_data['FWD'])}"
         team_name = entry_res.get("name", f"Team {team_id}")
         manager_name = f"{entry_res.get('player_first_name', '')} {entry_res.get('player_last_name', '')}"
-        
+
         return {
             "team_name": team_name,
             "manager_name": manager_name,
@@ -337,14 +335,14 @@ target_gw = data["target_gw"]
 last_gw = data["active_or_last_gw"]
 
 # -------------------------------------------------------------
-# 4. SQUAD INSPECTION POPUP DIALOG WITH GW ARROW SELECTOR
+# 4. SQUAD INSPECTION MODAL (STABLE MULTI-GW DIALOG)
 # -------------------------------------------------------------
 def build_card_html(p, is_bench=False):
     cap_html = ""
     if p.get("is_captain"):
-        cap_html = '<span style="background:#000;color:#fff;border-radius:50%;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:900;margin-left:3px;flex-shrink:0;">C</span>'
+        cap_html = '<span style="background:#000;color:#fff;border-radius:50%;width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:900;margin-left:3px;flex-shrink:0;">C</span>'
     elif p.get("is_vice"):
-        cap_html = '<span style="background:#555;color:#fff;border-radius:50%;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:900;margin-left:3px;flex-shrink:0;">V</span>'
+        cap_html = '<span style="background:#555;color:#fff;border-radius:50%;width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:900;margin-left:3px;flex-shrink:0;">V</span>'
 
     top_badge = f'<div style="font-size:9px;color:#2c3e50;font-weight:800;margin-bottom:2px;">{p.get("bench_order", "")}. {p["pos"]}</div>' if is_bench else ""
 
@@ -415,28 +413,16 @@ def build_full_pitch_html(pitch_data):
     <body>
       <div class="field">
     """
-
-    # Goalkeepers
     html += '<div class="line">'
     for p in pitch_data["GK"]: html += build_card_html(p)
-    html += '</div>'
-
-    # Defenders
-    html += '<div class="line">'
+    html += '</div><div class="line">'
     for p in pitch_data["DEF"]: html += build_card_html(p)
-    html += '</div>'
-
-    # Midfielders
-    html += '<div class="line">'
+    html += '</div><div class="line">'
     for p in pitch_data["MID"]: html += build_card_html(p)
-    html += '</div>'
-
-    # Forwards
-    html += '<div class="line" style="margin-bottom: 2px;">'
+    html += '</div><div class="line" style="margin-bottom: 2px;">'
     for p in pitch_data["FWD"]: html += build_card_html(p)
     html += '</div></div>'
 
-    # Bench Dugout
     html += """
       <div class="dugout">
         <div class="dugout-title">🪑 BENCH DUGOUT</div>
@@ -447,8 +433,7 @@ def build_full_pitch_html(pitch_data):
     return html
 
 @st.dialog("⚽ Squad Inspection", width="large")
-def show_squad_popup(team_id: int):
-    # Initialize popup viewed gameweek in session state
+def render_squad_dialog(team_id: int):
     if "popup_gw" not in st.session_state:
         st.session_state.popup_gw = last_gw
 
@@ -458,7 +443,6 @@ def show_squad_popup(team_id: int):
         st.error(f"Squad data for Gameweek {current_popup_gw} could not be retrieved.")
         return
 
-    # Team Name & Points Banner
     st.markdown(
         f"""
         <div style="display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; margin-bottom: 2px;">
@@ -477,41 +461,32 @@ def show_squad_popup(team_id: int):
     )
     st.caption(f"Manager: **{tdata['manager_name']}**")
 
-    # Arrow-Based Gameweek Selector Bar
-    col_prev, col_center, col_next = st.columns([1, 4, 1])
-    with col_prev:
-        if st.button("‹", key="gw_prev_btn", use_container_width=True, disabled=(current_popup_gw <= 1)):
-            st.session_state.popup_gw = max(1, current_popup_gw - 1)
-            st.rerun()
+    # Arrow Pagination: only show left arrow if > 1, right arrow if < last_gw
+    nav_col1, nav_col2, nav_col3 = st.columns([1, 3, 1])
+    with nav_col1:
+        if current_popup_gw > 1:
+            if st.button("‹", key="gw_left_arr", use_container_width=True):
+                st.session_state.popup_gw = current_popup_gw - 1
+                st.rerun()
 
-    with col_center:
+    with nav_col2:
         st.markdown(
-            f"""
-            <div style="text-align: center; font-size: 17px; font-weight: 800; color: #37003c; padding-top: 4px;">
-                Gameweek {current_popup_gw}
-            </div>
-            """,
+            f"<div style='text-align:center;font-size:16px;font-weight:800;color:#37003c;padding-top:4px;'>Gameweek {current_popup_gw}</div>",
             unsafe_allow_html=True
         )
 
-    with col_next:
-        if st.button("›", key="gw_next_btn", use_container_width=True, disabled=(current_popup_gw >= last_gw)):
-            st.session_state.popup_gw = min(last_gw, current_popup_gw + 1)
-            st.rerun()
+    with nav_col3:
+        if current_popup_gw < last_gw:
+            if st.button("›", key="gw_right_arr", use_container_width=True):
+                st.session_state.popup_gw = current_popup_gw + 1
+                st.rerun()
 
-    # Render Field & Bench
     html_code = build_full_pitch_html(tdata["pitch_data"])
     components.html(html_code, height=480, scrolling=False)
 
 # -------------------------------------------------------------
 # 5. SIDEBAR DASHBOARD
 # -------------------------------------------------------------
-saved_threads = load_all_threads()
-if not saved_threads:
-    default_thread = f"GW {target_gw} Strategy"
-    saved_threads[default_thread] = []
-    save_all_threads(saved_threads)
-
 with st.sidebar:
     if data["is_live_matchday"]:
         st.header(f"⚽ Live: GW {last_gw}")
@@ -530,6 +505,7 @@ with st.sidebar:
 
     st.info(f"🌍 **World #1:** {data['world_leader']['name']} ({data['world_leader']['team']}) — **{data['world_leader']['points']} pts**")
 
+    # Mini-League Selector & Leaderboard
     st.subheader("🏆 Mini-League Leaderboard")
     selected_league_label = st.selectbox("Select Mini-League:", list(LEAGUES_DICT.keys()), index=0)
     selected_league_id = LEAGUES_DICT[selected_league_label]
@@ -538,6 +514,7 @@ with st.sidebar:
     st.caption(f"Standings for **{league_name}**")
     st.dataframe(pd.DataFrame(league_table), hide_index=True, use_container_width=True)
 
+    # Inspect Squad Trigger
     st.subheader("🔍 Inspect Squad")
     manager_options = list(all_league_managers.keys())
     default_idx = 0
@@ -551,39 +528,88 @@ with st.sidebar:
         chosen_manager_label = st.selectbox("Select Manager:", manager_options, index=default_idx, label_visibility="collapsed")
     with sub_col2:
         if st.button("🔍 View", use_container_width=True):
-            # Reset viewed gameweek to the latest gameweek when opening a squad
+            st.session_state.active_dialog_team = all_league_managers[chosen_manager_label]
             st.session_state.popup_gw = last_gw
-            show_squad_popup(all_league_managers[chosen_manager_label])
-
-    st.divider()
-
-    st.subheader("📈 Price Movement Radar")
-    if data["price_risers"]:
-        st.caption("🔥 Risers: " + ", ".join(data["price_risers"]))
-    if data["price_fallers"]:
-        st.caption("❄️ Fallers: " + ", ".join(data["price_fallers"]))
-
-    st.divider()
-
-    st.subheader("💬 Conversation Threads")
-    thread_names = list(saved_threads.keys())
-    selected_thread = st.selectbox("Switch Thread:", thread_names, index=len(thread_names) - 1)
-
-    new_thread_input = st.text_input("New Thread Name:", placeholder=f"e.g., GW {target_gw} Transfers")
-    if st.button("➕ Create Thread", use_container_width=True) and new_thread_input.strip():
-        new_name = new_thread_input.strip()
-        if new_name not in saved_threads:
-            saved_threads[new_name] = []
-            save_all_threads(saved_threads)
             st.rerun()
 
-# -------------------------------------------------------------
-# 6. CHAT DISPLAY & COMPACT ATTACHMENT TOGGLE
-# -------------------------------------------------------------
-active_messages = saved_threads.get(selected_thread, [])
+    st.divider()
 
-st.markdown(f"### 🧵 {selected_thread}")
-st.caption(f"Targeting: **Gameweek {target_gw}** | Active Mini-League: **Crazy Football Fans**")
+    # Tabular Price Movement Radar
+    st.subheader("📈 Price Movement Radar")
+    tab_risers, tab_fallers = st.tabs(["🔥 Risers", "❄️ Fallers"])
+    with tab_risers:
+        if data["risers_list"]:
+            st.dataframe(pd.DataFrame(data["risers_list"]), hide_index=True, use_container_width=True)
+        else:
+            st.caption("No recent risers.")
+    with tab_fallers:
+        if data["fallers_list"]:
+            st.dataframe(pd.DataFrame(data["fallers_list"]), hide_index=True, use_container_width=True)
+        else:
+            st.caption("No recent fallers.")
+
+# Trigger dialog if set in session state
+if "active_dialog_team" in st.session_state and st.session_state.active_dialog_team is not None:
+    render_squad_dialog(st.session_state.active_dialog_team)
+
+# -------------------------------------------------------------
+# 6. HEADER & TOP CONVERSATION BAR
+# -------------------------------------------------------------
+saved_threads = load_all_threads()
+if not saved_threads:
+    default_thread = f"GW {target_gw} Strategy"
+    saved_threads[default_thread] = []
+    save_all_threads(saved_threads)
+
+thread_names = list(saved_threads.keys())
+if "selected_thread" not in st.session_state or st.session_state.selected_thread not in thread_names:
+    st.session_state.selected_thread = thread_names[-1]
+
+# Frozen Sticky Top Header
+st.markdown("""
+<style>
+.sticky-header {
+    position: sticky;
+    top: 2.875rem;
+    background: #ffffff;
+    z-index: 99;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e6e6e6;
+    margin-bottom: 12px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+with st.container():
+    hcol1, hcol2, hcol3 = st.columns([4, 4, 2])
+    with hcol1:
+        st.markdown(f"### 🧵 {st.session_state.selected_thread}")
+        st.caption(f"Targeting: **Gameweek {target_gw}** | League: **Crazy Football Fans**")
+    with hcol2:
+        new_pick = st.selectbox(
+            "Switch Thread:",
+            thread_names,
+            index=thread_names.index(st.session_state.selected_thread),
+            label_visibility="collapsed"
+        )
+        if new_pick != st.session_state.selected_thread:
+            st.session_state.selected_thread = new_pick
+            st.rerun()
+    with hcol3:
+        new_th_name = st.text_input("New Thread Name", placeholder="e.g. GW5 Wildcard", label_visibility="collapsed")
+        if st.button("➕ New", use_container_width=True) and new_th_name.strip():
+            c_name = new_th_name.strip()
+            if c_name not in saved_threads:
+                saved_threads[c_name] = []
+                save_all_threads(saved_threads)
+                st.session_state.selected_thread = c_name
+                st.rerun()
+
+# -------------------------------------------------------------
+# 7. CHAT DISPLAY & AI STRATEGIST
+# -------------------------------------------------------------
+current_thread = st.session_state.selected_thread
+active_messages = saved_threads.get(current_thread, [])
 
 for msg in active_messages:
     with st.chat_message(msg["role"]):
@@ -592,13 +618,13 @@ for msg in active_messages:
 
 with st.expander("📎 Attach Screenshot / Data File (Optional)", expanded=False):
     uploaded_file = st.file_uploader(
-        "Upload image or CSV (Rival team screenshots, LiveFPL tables, injury reports):",
+        "Upload image or CSV:",
         type=["png", "jpg", "jpeg", "webp", "csv", "txt"],
         label_visibility="collapsed",
         key="file_uploader"
     )
 
-if prompt := st.chat_input(f"Ask strategist in '{selected_thread}'..."):
+if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
     now_str = datetime.now().strftime("%b %d, %Y • %I:%M %p")
     gw_badge = f"⚽ Target: GW {target_gw}" if not data["is_live_matchday"] else f"⚽ Live: GW {last_gw} (Target: GW {target_gw})"
 
@@ -621,25 +647,29 @@ if prompt := st.chat_input(f"Ask strategist in '{selected_thread}'..."):
         )
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
-
+    
+    # Concise System Directives (Protects against token overflows)
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
-        f"Primary League: Crazy Football Fans (ID: 987870). All decisions must optimize winning this paid money league.\n"
+        f"Primary League: Crazy Football Fans (ID: 987870). All decisions must optimize winning this league.\n"
         f"Target Gameweek: GW {target_gw}. Bank: £{data['bank']}m. Free Transfers: {data['free_transfers']} FT.\n"
-        f"Chips Used: {data['chips_used'] if data['chips_used'] else 'None'}.\n"
-        f"Favorite Club: {MY_FAVORITE_CLUB}. ANTI-FAN-BIAS: Never recommend {MY_FAVORITE_CLUB} players out of emotion; justify purely with stats.\n\n"
-        "DIRECTIVES:\n"
-        "1. Identify Squad Weak Links based on form, low xGI, or bad FDR runs.\n"
-        "2. Deliver a Primary SELL -> BUY plan using 3GW xP projections, plus an immediate Plan B alternative.\n"
-        "3. Chip Strategy: Advise when to hold or trigger chips (Wildcard, Free Hit, Bench Boost, Triple Captain).\n"
-        "4. Price Rise/Fall Awareness: Warn user if targets are due to change price overnight.\n"
-        "5. Output fixtures and league standings in Markdown tables with Pos, Team, Manager, GD, and Pts.\n"
-        "6. Never deflect with 'What do you want to do?'. Give clear, math-backed tactical answers.\n\n"
-        f"LIVE DATA ENGINE:\n"
-        f"- User Squad & Formation: {user_pitch_info['formation'] if user_pitch_info else 'N/A'}\n"
-        f"- Full Squad Details: {user_pitch_info['all_squad'] if user_pitch_info else []}\n"
-        f"- Scouting Radar (Market): {data['scouting_radar']}\n"
-        f"- Mini-League Table: {league_table}\n"
+        f"Favorite Club: {MY_FAVORITE_CLUB}. ANTI-FAN-BIAS: Never recommend {MY_FAVORITE_CLUB} players out of emotion; justify with data.\n\n"
+        "DECISION RULES:\n"
+        "1. Identify Squad Weak Links (poor form, low xGI, or tough FDR fixtures).\n"
+        "2. Deliver Primary SELL -> BUY plan using 3-GW Expected Points (xP), plus an immediate Plan B alternative.\n"
+        "3. Multi-week staged planning: Outline Step 1 for this week and Step 2 for next week.\n"
+        "4. Chip Advice: Recommend when to hold or deploy Wildcard, Free Hit, Bench Boost, or Triple Captain.\n"
+        "5. Output fixtures/tables in clean Markdown tables. Never deflect with 'What do you want to do?'."
+    )
+
+    # Structured context passed in prompt turn
+    context_payload = (
+        f"--- LIVE SQUAD & STATISTICAL CONTEXT ---\n"
+        f"Current Formation: {user_pitch_info['formation'] if user_pitch_info else '3-4-3'}\n"
+        f"User Lineup & 3GW xP Projections: {[{'player': p['name'], 'pos': p['pos'], 'cost': p['cost'], '3GW_xP': p.get('xp_3gw', 0)} for p in (user_pitch_info['all_squad'] if user_pitch_info else [])]}\n"
+        f"Scouting Radar Market Targets: {data['scouting_radar']}\n"
+        f"Mini-League Top 5: {league_table[:5]}\n"
+        f"User Prompt: {prompt}"
     )
 
     current_prompt_parts = []
@@ -648,10 +678,10 @@ if prompt := st.chat_input(f"Ask strategist in '{selected_thread}'..."):
         mime_type = uploaded_file.type
         current_prompt_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
         current_prompt_parts.append(types.Part.from_text(text=f"Attached file: {uploaded_file.name}."))
-    current_prompt_parts.append(types.Part.from_text(text=prompt))
+    current_prompt_parts.append(types.Part.from_text(text=context_payload))
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing 3GW xP projections, formation, and rival differentials..."):
+        with st.spinner("Analyzing expected points, formation, and transfer routes..."):
             chat = client.chats.create(
                 model="gemini-2.5-flash",
                 history=history_contents,
@@ -672,5 +702,5 @@ if prompt := st.chat_input(f"Ask strategist in '{selected_thread}'..."):
     }
     active_messages.append(assistant_entry)
 
-    saved_threads[selected_thread] = active_messages
+    saved_threads[current_thread] = active_messages
     save_all_threads(saved_threads)
