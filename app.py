@@ -143,12 +143,11 @@ def fetch_base_fpl_data():
         pos_str = ["GK", "DEF", "MID", "FWD"][p["element_type"] - 1]
         cost = p["now_cost"] / 10
         cost_change = p.get("cost_change_event", 0) / 10
-        price_symbol = f"▲ +£{cost_change:.1f}m" if cost_change > 0 else (f"▼ -£{abs(cost_change):.1f}m" if cost_change < 0 else "—")
 
         if cost_change > 0:
-            risers_list.append({"Player": p["web_name"], "Price": f"£{cost:.1f}m", "Delta": f"+£{cost_change:.1f}m"})
+            risers_list.append({"Player": p["web_name"], "Price": f"£{cost:.1f}m", "Rise": f"+£{cost_change:.1f}m"})
         elif cost_change < 0:
-            fallers_list.append({"Player": p["web_name"], "Price": f"£{cost:.1f}m", "Delta": f"-£{abs(cost_change):.1f}m"})
+            fallers_list.append({"Player": p["web_name"], "Price": f"£{cost:.1f}m", "Fall": f"-£{abs(cost_change):.1f}m"})
 
         form_val = float(p.get("form", 0.0) or 0.0)
         xgi_val = float(p.get("expected_goal_involvements", 0.0) or 0.0)
@@ -171,7 +170,6 @@ def fetch_base_fpl_data():
             "club_code": club_code,
             "pos": pos_str,
             "cost": cost,
-            "price_delta": price_symbol,
             "form": form_val,
             "points": p.get("total_points", 0),
             "event_points": p.get("event_points", 0),
@@ -193,7 +191,6 @@ def fetch_base_fpl_data():
         free_transfers_available = min(5, max(1, 1 if last_gw_stat.get("event_transfers", 0) > 0 else 2))
 
     chips_used = [c["name"] for c in my_history.get("chips", [])]
-
     wl_standings = requests.get("https://fantasy.premierleague.com/api/leagues-classic/314/standings/", headers=HEADERS).json()
     world_leader = wl_standings["standings"]["results"][0]
 
@@ -210,8 +207,8 @@ def fetch_base_fpl_data():
         "free_transfers": free_transfers_available,
         "chips_used": chips_used,
         "elements_detail": elements_detail,
-        "risers_list": risers_list[:6],
-        "fallers_list": fallers_list[:6],
+        "risers_list": risers_list[:8],
+        "fallers_list": fallers_list[:8],
         "world_leader": {
             "name": world_leader["player_name"],
             "team": world_leader["entry_name"],
@@ -335,7 +332,7 @@ target_gw = data["target_gw"]
 last_gw = data["active_or_last_gw"]
 
 # -------------------------------------------------------------
-# 4. SQUAD INSPECTION MODAL (STABLE MULTI-GW DIALOG)
+# 4. SQUAD INSPECTION POPUP DIALOG
 # -------------------------------------------------------------
 def build_card_html(p, is_bench=False):
     cap_html = ""
@@ -461,7 +458,6 @@ def render_squad_dialog(team_id: int):
     )
     st.caption(f"Manager: **{tdata['manager_name']}**")
 
-    # Arrow Pagination: only show left arrow if > 1, right arrow if < last_gw
     nav_col1, nav_col2, nav_col3 = st.columns([1, 3, 1])
     with nav_col1:
         if current_popup_gw > 1:
@@ -505,7 +501,6 @@ with st.sidebar:
 
     st.info(f"🌍 **World #1:** {data['world_leader']['name']} ({data['world_leader']['team']}) — **{data['world_leader']['points']} pts**")
 
-    # Mini-League Selector & Leaderboard
     st.subheader("🏆 Mini-League Leaderboard")
     selected_league_label = st.selectbox("Select Mini-League:", list(LEAGUES_DICT.keys()), index=0)
     selected_league_id = LEAGUES_DICT[selected_league_label]
@@ -514,7 +509,6 @@ with st.sidebar:
     st.caption(f"Standings for **{league_name}**")
     st.dataframe(pd.DataFrame(league_table), hide_index=True, use_container_width=True)
 
-    # Inspect Squad Trigger
     st.subheader("🔍 Inspect Squad")
     manager_options = list(all_league_managers.keys())
     default_idx = 0
@@ -534,26 +528,24 @@ with st.sidebar:
 
     st.divider()
 
-    # Tabular Price Movement Radar
     st.subheader("📈 Price Movement Radar")
     tab_risers, tab_fallers = st.tabs(["🔥 Risers", "❄️ Fallers"])
     with tab_risers:
         if data["risers_list"]:
             st.dataframe(pd.DataFrame(data["risers_list"]), hide_index=True, use_container_width=True)
         else:
-            st.caption("No recent risers.")
+            st.caption("No price rises recorded today.")
     with tab_fallers:
         if data["fallers_list"]:
             st.dataframe(pd.DataFrame(data["fallers_list"]), hide_index=True, use_container_width=True)
         else:
-            st.caption("No recent fallers.")
+            st.caption("No price falls recorded today.")
 
-# Trigger dialog if set in session state
 if "active_dialog_team" in st.session_state and st.session_state.active_dialog_team is not None:
     render_squad_dialog(st.session_state.active_dialog_team)
 
 # -------------------------------------------------------------
-# 6. HEADER & TOP CONVERSATION BAR
+# 6. FROZEN STICKY HEADER & COMPACT THREAD SELECTOR
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -565,44 +557,49 @@ thread_names = list(saved_threads.keys())
 if "selected_thread" not in st.session_state or st.session_state.selected_thread not in thread_names:
     st.session_state.selected_thread = thread_names[-1]
 
-# Frozen Sticky Top Header
+# Sticky Header anchored to Streamlit's container
 st.markdown("""
 <style>
-.sticky-header {
+div[data-testid="stVerticalBlock"] > div:has(.sticky-anchor) {
     position: sticky;
-    top: 2.875rem;
-    background: #ffffff;
-    z-index: 99;
+    top: 0px;
+    z-index: 999;
+    background-color: white;
+    padding-top: 10px;
     padding-bottom: 8px;
-    border-bottom: 1px solid #e6e6e6;
-    margin-bottom: 12px;
+    border-bottom: 2px solid #f0f2f6;
 }
 </style>
+<div class="sticky-anchor"></div>
 """, unsafe_allow_html=True)
 
 with st.container():
-    hcol1, hcol2, hcol3 = st.columns([4, 4, 2])
-    with hcol1:
-        st.markdown(f"### 🧵 {st.session_state.selected_thread}")
-        st.caption(f"Targeting: **Gameweek {target_gw}** | League: **Crazy Football Fans**")
-    with hcol2:
-        new_pick = st.selectbox(
+    st.markdown("<h2 style='margin:0; padding:0;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
+    
+    # Single-row compact bar
+    r1, r2, r3, r4 = st.columns([4, 3, 2.5, 0.7])
+    with r1:
+        st.markdown(f"**🧵 {st.session_state.selected_thread}**")
+        st.caption(f"Targeting: **GW {target_gw}** | League: **Crazy Football Fans**")
+    with r2:
+        picked = st.selectbox(
             "Switch Thread:",
             thread_names,
             index=thread_names.index(st.session_state.selected_thread),
             label_visibility="collapsed"
         )
-        if new_pick != st.session_state.selected_thread:
-            st.session_state.selected_thread = new_pick
+        if picked != st.session_state.selected_thread:
+            st.session_state.selected_thread = picked
             st.rerun()
-    with hcol3:
-        new_th_name = st.text_input("New Thread Name", placeholder="e.g. GW5 Wildcard", label_visibility="collapsed")
-        if st.button("➕ New", use_container_width=True) and new_th_name.strip():
-            c_name = new_th_name.strip()
-            if c_name not in saved_threads:
-                saved_threads[c_name] = []
+    with r3:
+        new_th_title = st.text_input("New Thread", placeholder="e.g. GW5 Transfers", label_visibility="collapsed")
+    with r4:
+        if st.button("➕", help="Create New Thread", use_container_width=True) and new_th_title.strip():
+            clean_t = new_th_title.strip()
+            if clean_t not in saved_threads:
+                saved_threads[clean_t] = []
                 save_all_threads(saved_threads)
-                st.session_state.selected_thread = c_name
+                st.session_state.selected_thread = clean_t
                 st.rerun()
 
 # -------------------------------------------------------------
@@ -647,8 +644,7 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
         )
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
-    
-    # Concise System Directives (Protects against token overflows)
+
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
         f"Primary League: Crazy Football Fans (ID: 987870). All decisions must optimize winning this league.\n"
@@ -662,7 +658,6 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
         "5. Output fixtures/tables in clean Markdown tables. Never deflect with 'What do you want to do?'."
     )
 
-    # Structured context passed in prompt turn
     context_payload = (
         f"--- LIVE SQUAD & STATISTICAL CONTEXT ---\n"
         f"Current Formation: {user_pitch_info['formation'] if user_pitch_info else '3-4-3'}\n"
