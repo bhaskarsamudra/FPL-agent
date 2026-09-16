@@ -267,13 +267,18 @@ def fetch_mini_league_full(league_id: int):
     return league_name, table_rows, all_managers
 
 @st.cache_data(ttl=300)
-def fetch_team_pitch_data(entry_id: int, gw: int, elements_detail: dict):
+def fetch_team_pitch_data(team_id: int, gw: int, elements_detail: dict):
     try:
-        picks_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{entry_id}/event/{gw}/picks/", headers=HEADERS).json()
-        entry_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{entry_id}/", headers=HEADERS).json()
+        picks_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{team_id}/event/{gw}/picks/", headers=HEADERS).json()
+        entry_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{team_id}/", headers=HEADERS).json()
         
+        # Pull gameweek points for this specific GW
         gw_points = picks_res.get("entry_history", {}).get("points", 0)
         total_points = entry_res.get("summary_overall_points", 0)
+
+        # Pull per-player points for this specific GW
+        live_res = requests.get(f"https://fantasy.premierleague.com/api/event/{gw}/live/", headers=HEADERS).json()
+        live_elements = {el["id"]: el["stats"]["total_points"] for el in live_res.get("elements", [])}
 
         pitch_data = {"GK": [], "DEF": [], "MID": [], "FWD": [], "BENCH": []}
         all_squad = []
@@ -289,11 +294,15 @@ def fetch_team_pitch_data(entry_id: int, gw: int, elements_detail: dict):
             is_cap = bool(p.get("is_captain"))
             is_vc = bool(p.get("is_vice_captain"))
 
+            # Effective GW points (doubled for captain)
+            raw_pts = live_elements.get(p["element"], info.get("event_points", 0))
+            calc_pts = raw_pts * (p.get("multiplier", 1) or 1)
+
             card = {
                 "name": info.get("name", "Unknown"),
                 "club": info.get("club_short", "UNK"),
                 "pos": pos,
-                "points": info.get("event_points", 0),
+                "points": calc_pts,
                 "cost": f"£{info.get('cost', 0.0)}m",
                 "jersey_url": jersey_url,
                 "is_captain": is_cap,
@@ -307,7 +316,7 @@ def fetch_team_pitch_data(entry_id: int, gw: int, elements_detail: dict):
                 pitch_data["BENCH"].append(card)
 
         formation = f"{len(pitch_data['DEF'])}-{len(pitch_data['MID'])}-{len(pitch_data['FWD'])}"
-        team_name = entry_res.get("name", f"Team {entry_id}")
+        team_name = entry_res.get("name", f"Team {team_id}")
         manager_name = f"{entry_res.get('player_first_name', '')} {entry_res.get('player_last_name', '')}"
         
         return {
@@ -328,7 +337,7 @@ target_gw = data["target_gw"]
 last_gw = data["active_or_last_gw"]
 
 # -------------------------------------------------------------
-# 4. SQUAD INSPECTION POPUP DIALOG
+# 4. SQUAD INSPECTION POPUP DIALOG WITH GW ARROW SELECTOR
 # -------------------------------------------------------------
 def build_card_html(p, is_bench=False):
     cap_html = ""
@@ -439,24 +448,58 @@ def build_full_pitch_html(pitch_data):
 
 @st.dialog("⚽ Squad Inspection", width="large")
 def show_squad_popup(team_id: int):
-    tdata = fetch_team_pitch_data(team_id, last_gw, data["elements_detail"])
+    # Initialize popup viewed gameweek in session state
+    if "popup_gw" not in st.session_state:
+        st.session_state.popup_gw = last_gw
+
+    current_popup_gw = st.session_state.popup_gw
+    tdata = fetch_team_pitch_data(team_id, current_popup_gw, data["elements_detail"])
     if not tdata:
-        st.error("Squad lineup could not be retrieved.")
+        st.error(f"Squad data for Gameweek {current_popup_gw} could not be retrieved.")
         return
 
-    # Team Name + GW Points Badge in Header
+    # Team Name & Points Banner
     st.markdown(
         f"""
-        <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px;">
-            <h3 style="margin: 0; padding: 0;">{tdata['team_name']} ({tdata['formation']})</h3>
-            <span style="background: #37003c; color: #00ff87; font-size: 14px; font-weight: 800; border-radius: 6px; padding: 2px 10px;">GW{last_gw}: {tdata['gw_points']} pts</span>
-            <span style="color: #666; font-size: 13px; font-weight: 600;">(Total: {tdata['total_points']} pts)</span>
+        <div style="display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; margin-bottom: 2px;">
+            <div style="display: flex; align-items: baseline; gap: 8px;">
+                <h3 style="margin: 0; padding: 0;">{tdata['team_name']} ({tdata['formation']})</h3>
+                <span style="color: #666; font-size: 13px; font-weight: 600;">(Total: {tdata['total_points']} pts)</span>
+            </div>
+            <div>
+                <span style="background: #37003c; color: #00ff87; font-size: 14px; font-weight: 800; border-radius: 6px; padding: 3px 10px;">
+                    GW{current_popup_gw}: {tdata['gw_points']} pts
+                </span>
+            </div>
         </div>
         """,
         unsafe_allow_html=True
     )
     st.caption(f"Manager: **{tdata['manager_name']}**")
 
+    # Arrow-Based Gameweek Selector Bar
+    col_prev, col_center, col_next = st.columns([1, 4, 1])
+    with col_prev:
+        if st.button("‹", key="gw_prev_btn", use_container_width=True, disabled=(current_popup_gw <= 1)):
+            st.session_state.popup_gw = max(1, current_popup_gw - 1)
+            st.rerun()
+
+    with col_center:
+        st.markdown(
+            f"""
+            <div style="text-align: center; font-size: 17px; font-weight: 800; color: #37003c; padding-top: 4px;">
+                Gameweek {current_popup_gw}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    with col_next:
+        if st.button("›", key="gw_next_btn", use_container_width=True, disabled=(current_popup_gw >= last_gw)):
+            st.session_state.popup_gw = min(last_gw, current_popup_gw + 1)
+            st.rerun()
+
+    # Render Field & Bench
     html_code = build_full_pitch_html(tdata["pitch_data"])
     components.html(html_code, height=480, scrolling=False)
 
@@ -508,6 +551,8 @@ with st.sidebar:
         chosen_manager_label = st.selectbox("Select Manager:", manager_options, index=default_idx, label_visibility="collapsed")
     with sub_col2:
         if st.button("🔍 View", use_container_width=True):
+            # Reset viewed gameweek to the latest gameweek when opening a squad
+            st.session_state.popup_gw = last_gw
             show_squad_popup(all_league_managers[chosen_manager_label])
 
     st.divider()
