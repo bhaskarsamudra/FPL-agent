@@ -98,7 +98,7 @@ def save_all_threads(threads):
         pass
 
 # -------------------------------------------------------------
-# 3. ADVANCED STATS, DEADLINES & SCOUTING ENGINE
+# 3. ADVANCED STATS & SCOUTING ENGINE
 # -------------------------------------------------------------
 @st.cache_data(ttl=300)
 def fetch_base_fpl_data():
@@ -106,7 +106,6 @@ def fetch_base_fpl_data():
     teams_map = {t["id"]: t["name"] for t in boot["teams"]}
     teams_short = {t["id"]: t["short_name"] for t in boot["teams"]}
 
-    # Deadline Logic
     now_utc = datetime.now(timezone.utc)
     target_gw = 38
     is_live_matchday = False
@@ -181,60 +180,18 @@ def fetch_base_fpl_data():
         elements_detail[p["id"]] = player_dict
         all_players_pool.append(player_dict)
 
-    # User Squad Detail & History
+    # User Squad Details
     my_picks = requests.get(f"https://fantasy.premierleague.com/api/entry/{MY_TEAM_ID}/event/{active_or_last_gw}/picks/", headers=HEADERS).json()
     my_entry = requests.get(f"https://fantasy.premierleague.com/api/entry/{MY_TEAM_ID}/", headers=HEADERS).json()
     my_history = requests.get(f"https://fantasy.premierleague.com/api/entry/{MY_TEAM_ID}/history/", headers=HEADERS).json()
 
-    # Free Transfers Calc
     free_transfers_available = 1
     recent_history = my_history.get("current", [])
     if recent_history:
         last_gw_stat = recent_history[-1]
         free_transfers_available = min(5, max(1, 1 if last_gw_stat.get("event_transfers", 0) > 0 else 2))
 
-    # Active Chips Tracking
     chips_used = [c["name"] for c in my_history.get("chips", [])]
-
-    my_squad = []
-    pitch_data = {"GK": [], "DEF": [], "MID": [], "FWD": [], "BENCH": []}
-
-    for p in my_picks.get("picks", []):
-        info = elements_detail.get(p["element"], {})
-        is_starter = p["position"] <= 11
-        badge = "(C)" if p["is_captain"] else ("(V)" if p["is_vice_captain"] else "")
-        
-        card = {
-            "name": info.get("name", "Unknown"),
-            "club": info.get("club_short", "UNK"),
-            "pos": info.get("pos"),
-            "points": info.get("event_points", 0),
-            "badge": badge,
-            "cost": f"£{info.get('cost', 0.0)}m",
-            "price_delta": info.get("price_delta", "—"),
-            "form": info.get("form"),
-            "xGI": info.get("xGI"),
-            "3GW_xP": info.get("xp_3gw"),
-            "starter": is_starter
-        }
-        my_squad.append(card)
-        if is_starter:
-            pitch_data[info.get("pos", "MID")].append(card)
-        else:
-            pitch_data["BENCH"].append(card)
-
-    formation = f"{len(pitch_data['DEF'])}-{len(pitch_data['MID'])}-{len(pitch_data['FWD'])}"
-
-    # Premier League Standings
-    pl_standings = []
-    for t in boot["teams"]:
-        pl_standings.append({
-            "Pos": t["position"], "Club": t["name"], "P": t.get("played", 0),
-            "W": t.get("win", 0), "D": t.get("draw", 0), "L": t.get("loss", 0),
-            "GD": t.get("strength_overall_home", 0) - t.get("strength_overall_away", 0),
-            "Pts": t.get("points", 0)
-        })
-    pl_standings = sorted(pl_standings, key=lambda x: x["Pos"])
 
     # World Leader
     wl_standings = requests.get("https://fantasy.premierleague.com/api/leagues-classic/314/standings/", headers=HEADERS).json()
@@ -252,9 +209,7 @@ def fetch_base_fpl_data():
         "bank": my_picks.get("entry_history", {}).get("bank", 0) / 10,
         "free_transfers": free_transfers_available,
         "chips_used": chips_used,
-        "formation": formation,
-        "pitch_data": pitch_data,
-        "squad": my_squad,
+        "elements_detail": elements_detail,
         "price_risers": price_risers[:6],
         "price_fallers": price_fallers[:6],
         "world_leader": {
@@ -263,7 +218,6 @@ def fetch_base_fpl_data():
             "points": world_leader["total"],
             "gw_points": world_leader["event_total"]
         },
-        "pl_table": pl_standings,
         "scouting_radar": {
             "top_xp_forwards": sorted([p for p in all_players_pool if p["pos"] == "FWD"], key=lambda x: x["xp_3gw"], reverse=True)[:6],
             "top_xp_midfielders": sorted([p for p in all_players_pool if p["pos"] == "MID"], key=lambda x: x["xp_3gw"], reverse=True)[:8],
@@ -308,15 +262,57 @@ def fetch_mini_league_table(league_id: int):
                 "entry_id": user_entry["entry"]
             })
 
-    leader_entry = results[0]["entry"] if results else None
-    return league_name, table_rows, leader_entry
+    return league_name, table_rows
 
+@st.cache_data(ttl=300)
+def fetch_team_pitch_data(entry_id: int, gw: int, elements_detail: dict):
+    """Fetches any team's starting XI and bench structured for pitch rendering."""
+    try:
+        picks_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{entry_id}/event/{gw}/picks/", headers=HEADERS).json()
+        entry_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{entry_id}/", headers=HEADERS).json()
+        
+        pitch_data = {"GK": [], "DEF": [], "MID": [], "FWD": [], "BENCH": []}
+        all_squad = []
+
+        for p in picks_res.get("picks", []):
+            info = elements_detail.get(p["element"], {})
+            badge = " (C)" if p["is_captain"] else (" (V)" if p["is_vice_captain"] else "")
+            card = {
+                "name": info.get("name", "Unknown"),
+                "club": info.get("club_short", "UNK"),
+                "pos": info.get("pos", "MID"),
+                "badge": badge,
+                "points": info.get("event_points", 0),
+                "cost": f"£{info.get('cost', 0.0)}m",
+                "is_captain": p["is_captain"]
+            }
+            all_squad.append(card)
+            if p["position"] <= 11:
+                pitch_data[info.get("pos", "MID")].append(card)
+            else:
+                pitch_data["BENCH"].append(card)
+
+        formation = f"{len(pitch_data['DEF'])}-{len(pitch_data['MID'])}-{len(pitch_data['FWD'])}"
+        team_name = entry_res.get("name", f"Team {entry_id}")
+        manager_name = f"{entry_res.get('player_first_name', '')} {entry_res.get('player_last_name', '')}"
+        
+        return {
+            "team_name": team_name,
+            "manager_name": manager_name,
+            "formation": formation,
+            "pitch_data": pitch_data,
+            "all_squad": all_squad
+        }
+    except Exception:
+        return None
+
+# Load Core Data
 data = fetch_base_fpl_data()
 target_gw = data["target_gw"]
 last_gw = data["active_or_last_gw"]
 
 # -------------------------------------------------------------
-# 4. SIDEBAR DASHBOARD
+# 4. SIDEBAR DASHBOARD & LEAGUE INSPECTOR
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -342,29 +338,34 @@ with st.sidebar:
         st.metric("Bank Balance", f"£{data['bank']}m")
 
     # Compact World #1 Bar
-    st.info(f"🌍 **World #1 Leader:** {data['world_leader']['name']} ({data['world_leader']['team']}) — **{data['world_leader']['points']} pts** (GW: {data['world_leader']['gw_points']})")
+    st.info(f"🌍 **World #1 Leader:** {data['world_leader']['name']} ({data['world_leader']['team']}) — **{data['world_leader']['points']} pts**")
 
     # Mini-League Selector & Leaderboard
     st.subheader("🏆 Mini-League Leaderboard")
     selected_league_label = st.selectbox("Select Mini-League:", list(LEAGUES_DICT.keys()), index=0)
     selected_league_id = LEAGUES_DICT[selected_league_label]
 
-    league_name, league_table, leader_entry_id = fetch_mini_league_table(selected_league_id)
+    league_name, league_table = fetch_mini_league_table(selected_league_id)
     st.caption(f"Standings for **{league_name}**")
     
     clean_df = pd.DataFrame(league_table)
-    if "entry_id" in clean_df.columns:
-        clean_df = clean_df.drop(columns=["entry_id"])
-    st.dataframe(clean_df, hide_index=True, use_container_width=True)
+    display_df = clean_df.drop(columns=["entry_id"]) if "entry_id" in clean_df.columns else clean_df
+    st.dataframe(display_df, hide_index=True, use_container_width=True)
+
+    # Team Pitch Inspector
+    st.subheader("🔍 Inspect Team Pitch")
+    inspectable_teams = {row["Team"]: row["entry_id"] for row in league_table if row["entry_id"] is not None}
+    selected_inspect_team = st.selectbox("Select team to view formation:", list(inspectable_teams.keys()), index=0)
+    selected_inspect_id = inspectable_teams[selected_inspect_team]
 
     st.divider()
 
     # Price Movement Radar
     st.subheader("📈 Price Movement Radar")
     if data["price_risers"]:
-        st.caption("🔥 Recent Risers: " + ", ".join(data["price_risers"]))
+        st.caption("🔥 Risers: " + ", ".join(data["price_risers"]))
     if data["price_fallers"]:
-        st.caption("❄️ Recent Fallers: " + ", ".join(data["price_fallers"]))
+        st.caption("❄️ Fallers: " + ", ".join(data["price_fallers"]))
 
     st.divider()
 
@@ -382,77 +383,72 @@ with st.sidebar:
             st.rerun()
 
 # -------------------------------------------------------------
-# 5. VISUAL PITCH FORMATION COMPONENT (EXPANDABLE)
+# 5. DYNAMIC NATIVE PITCH FORMATION (NO RAW HTML ESCAPING)
 # -------------------------------------------------------------
-def render_player_badge(card):
-    badge_html = f"<span style='color: #00ff87; font-weight: bold;'>{card['badge']}</span>" if card['badge'] else ""
-    return f"""
-    <div style="background: rgba(255,255,255,0.92); border-radius: 6px; padding: 4px 6px; margin: 2px auto; text-align: center; max-width: 110px; box-shadow: 0 2px 4px rgba(0,0,0,0.25);">
-        <div style="font-size: 11px; font-weight: 700; color: #111; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{card['name']} {badge_html}</div>
-        <div style="font-size: 9px; color: #555;">{card['club']} • {card['cost']}</div>
-        <div style="background: #37003c; color: #00ff87; font-size: 10px; font-weight: 800; border-radius: 3px; margin-top: 2px;">{card['points']} pts</div>
-    </div>
-    """
+team_formation_data = fetch_team_pitch_data(selected_inspect_id, last_gw, data["elements_detail"])
 
-with st.expander("🏟️ View Active Lineup Pitch (FPL Formation: " + data["formation"] + ")", expanded=False):
-    st.markdown("""
-    <style>
-    .pitch-container {
-        background: linear-gradient(180deg, #1f8a4c 0%, #15733d 50%, #0d5c2e 100%);
-        border: 2px solid #ffffff;
-        border-radius: 12px;
-        padding: 16px 8px;
-        margin-bottom: 12px;
-    }
-    .pitch-row {
-        display: flex;
-        justify-content: space-around;
-        align-items: center;
-        margin: 10px 0;
-    }
-    .bench-dugout {
-        background: rgba(15, 30, 20, 0.85);
-        border: 1px dashed #00ff87;
-        border-radius: 8px;
-        padding: 8px;
-        margin-top: 12px;
-        display: flex;
-        justify-content: space-around;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+if team_formation_data:
+    is_user_pitch = (selected_inspect_id == MY_TEAM_ID)
+    header_label = f"🏟️ Pitch: {team_formation_data['team_name']} ({team_formation_data['formation']})"
+    if is_user_pitch:
+        header_label += " — (Your Squad)"
+    else:
+        header_label += f" — Manager: {team_formation_data['manager_name']}"
 
-    pitch_html = '<div class="pitch-container">'
-    # Goalkeeper row
-    pitch_html += '<div class="pitch-row">'
-    for p in data["pitch_data"]["GK"]: pitch_html += render_player_badge(p)
-    pitch_html += '</div>'
+    with st.expander(header_label, expanded=False):
+        # Green Pitch Container Card
+        st.markdown("""
+        <div style="background: linear-gradient(180deg, #1e7e34 0%, #155724 100%); border-radius: 10px; padding: 12px 10px 4px 10px; border: 2px solid #ffffff; margin-bottom: 8px;">
+            <div style="text-align: center; color: #d4edda; font-size: 11px; font-weight: 700; letter-spacing: 1px;">PREMIER LEAGUE PITCH</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # Defender row
-    pitch_html += '<div class="pitch-row">'
-    for p in data["pitch_data"]["DEF"]: pitch_html += render_player_badge(p)
-    pitch_html += '</div>'
+        pitch = team_formation_data["pitch_data"]
 
-    # Midfielder row
-    pitch_html += '<div class="pitch-row">'
-    for p in data["pitch_data"]["MID"]: pitch_html += render_player_badge(p)
-    pitch_html += '</div>'
+        def render_player_col(col, player):
+            badge = f" :green[{player['badge']}]" if player['badge'] else ""
+            with col:
+                st.markdown(
+                    f"<div style='background: white; border-radius: 6px; padding: 4px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.3); margin-bottom: 6px;'>"
+                    f"<div style='font-size: 12px; font-weight: 800; color: #111; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'>{player['name']}{badge}</div>"
+                    f"<div style='font-size: 10px; color: #555;'>{player['club']} • {player['cost']}</div>"
+                    f"<div style='background: #37003c; color: #00ff87; font-size: 11px; font-weight: 800; border-radius: 3px; margin-top: 2px;'>{player['points']} pts</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
 
-    # Forward row
-    pitch_html += '<div class="pitch-row">'
-    for p in data["pitch_data"]["FWD"]: pitch_html += render_player_badge(p)
-    pitch_html += '</div>'
+        # 1. Goalkeeper Row
+        gk_cols = st.columns([2, 1, 2])
+        for p in pitch["GK"]:
+            render_player_col(gk_cols[1], p)
 
-    # Bench dugout
-    pitch_html += '<div style="color: #ffffff; font-size: 11px; font-weight: bold; margin-top: 8px; text-align: center;">🪑 BENCH DUGOUT</div>'
-    pitch_html += '<div class="bench-dugout">'
-    for p in data["pitch_data"]["BENCH"]: pitch_html += render_player_badge(p)
-    pitch_html += '</div></div>'
+        # 2. Defenders Row
+        if pitch["DEF"]:
+            def_cols = st.columns(len(pitch["DEF"]))
+            for idx, p in enumerate(pitch["DEF"]):
+                render_player_col(def_cols[idx], p)
 
-    st.markdown(pitch_html, unsafe_allow_html=True)
+        # 3. Midfielders Row
+        if pitch["MID"]:
+            mid_cols = st.columns(len(pitch["MID"]))
+            for idx, p in enumerate(pitch["MID"]):
+                render_player_col(mid_cols[idx], p)
+
+        # 4. Forwards Row
+        if pitch["FWD"]:
+            fwd_cols = st.columns(len(pitch["FWD"]))
+            for idx, p in enumerate(pitch["FWD"]):
+                render_player_col(fwd_cols[idx], p)
+
+        # 5. Bench Dugout
+        st.markdown("<div style='text-align: center; font-size: 11px; font-weight: bold; color: #555; margin-top: 4px;'>🪑 BENCH DUGOUT</div>", unsafe_allow_html=True)
+        if pitch["BENCH"]:
+            bench_cols = st.columns(len(pitch["BENCH"]))
+            for idx, p in enumerate(pitch["BENCH"]):
+                render_player_col(bench_cols[idx], p)
 
 # -------------------------------------------------------------
-# 6. CHAT DISPLAY & FILE ATTACHMENTS
+# 6. CHAT DISPLAY & COMPACT ATTACHMENT TOGGLE
 # -------------------------------------------------------------
 active_messages = saved_threads.get(selected_thread, [])
 
@@ -464,12 +460,14 @@ for msg in active_messages:
         st.caption(f"🗓️ {msg.get('timestamp', '')} | {msg.get('gw_tag', f'Target: GW {target_gw}')}")
         st.markdown(msg["content"])
 
-# Multimodal File Uploader (Retained for screenshots and CSVs)
-uploaded_file = st.file_uploader(
-    "📎 Attach screenshot, rival squad, or fixture sheet (Optional)",
-    type=["png", "jpg", "jpeg", "webp", "csv", "txt"],
-    key="file_uploader"
-)
+# Sleek Attachment Expander directly above Chat Input
+with st.expander("📎 Attach Screenshot / Data File (Optional)", expanded=False):
+    uploaded_file = st.file_uploader(
+        "Upload image or CSV (Rival team screenshots, LiveFPL tables, injury reports):",
+        type=["png", "jpg", "jpeg", "webp", "csv", "txt"],
+        label_visibility="collapsed",
+        key="file_uploader"
+    )
 
 if prompt := st.chat_input(f"Ask strategist in '{selected_thread}'..."):
     now_str = datetime.now().strftime("%b %d, %Y • %I:%M %p")
@@ -493,25 +491,27 @@ if prompt := st.chat_input(f"Ask strategist in '{selected_thread}'..."):
             )
         )
 
+    # Fetch User Squad Pitch Data for Prompt
+    user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
+
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
         f"Primary League: Crazy Football Fans (ID: 987870). All decisions must optimize winning this paid money league.\n"
         f"Target Gameweek: GW {target_gw}. Bank: £{data['bank']}m. Free Transfers: {data['free_transfers']} FT.\n"
         f"Chips Used: {data['chips_used'] if data['chips_used'] else 'None'}.\n"
-        f"Favorite Club: {MY_FAVORITE_CLUB}. ANTI-FAN-BIAS: Never recommend {MY_FAVORITE_CLUB} players out of sentiment; justify purely with stats.\n\n"
-        "DIRECTIVES & STRATEGIC CAPABILITIES:\n"
-        "1. Identify Squad Weak Links: Pinpoint underperforming players based on form, low xGI, or difficult FDR runs.\n"
-        "2. Transfer Moves: Deliver a Primary SELL -> BUY plan using 3GW xP projections, plus an immediate Plan B alternative.\n"
-        "3. Chip Strategy: Advise when to hold or trigger chips (Wildcard, Free Hit, Bench Boost, Triple Captain) considering blanks and doubles.\n"
-        "4. Price Rise/Fall Awareness: Warn the user if players are due for an overnight price rise or drop.\n"
-        "5. Visual Tables: Output fixtures and league standings in Markdown tables with Pos, Team, Manager, GD, and Pts.\n"
-        "6. Tone: Decisive and numbers-backed. Never deflect with 'What do you want to do?'.\n\n"
+        f"Favorite Club: {MY_FAVORITE_CLUB}. ANTI-FAN-BIAS: Never recommend {MY_FAVORITE_CLUB} players out of emotion; justify purely with stats.\n\n"
+        "DIRECTIVES:\n"
+        "1. Identify Squad Weak Links based on form, low xGI, or bad FDR runs.\n"
+        "2. Deliver a Primary SELL -> BUY plan using 3GW xP projections, plus an immediate Plan B alternative.\n"
+        "3. Chip Strategy: Advise when to hold or trigger chips (Wildcard, Free Hit, Bench Boost, Triple Captain).\n"
+        "4. Price Rise/Fall Awareness: Warn user if targets are due to change price overnight.\n"
+        "5. Output fixtures and league standings in Markdown tables with Pos, Team, Manager, GD, and Pts.\n"
+        "6. Never deflect with 'What do you want to do?'. Give clear, math-backed tactical answers.\n\n"
         f"LIVE DATA ENGINE:\n"
-        f"- Active Lineup Formation: {data['formation']}\n"
-        f"- Squad Details: {data['squad']}\n"
-        f"- Scouting Shortlists: {data['scouting_radar']}\n"
+        f"- User Squad & Formation: {user_pitch_info['formation'] if user_pitch_info else 'N/A'}\n"
+        f"- Full Squad Details: {user_pitch_info['all_squad'] if user_pitch_info else []}\n"
+        f"- Scouting Radar (Market): {data['scouting_radar']}\n"
         f"- Mini-League Table: {league_table}\n"
-        f"- Premier League Table: {data['pl_table']}\n"
     )
 
     current_prompt_parts = []
@@ -523,7 +523,7 @@ if prompt := st.chat_input(f"Ask strategist in '{selected_thread}'..."):
     current_prompt_parts.append(types.Part.from_text(text=prompt))
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing 3GW xP projections, price movements, and league standings..."):
+        with st.spinner("Analyzing 3GW xP projections, formation, and rival differentials..."):
             chat = client.chats.create(
                 model="gemini-2.5-flash",
                 history=history_contents,
