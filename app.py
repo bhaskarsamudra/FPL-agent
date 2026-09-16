@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import requests
 import streamlit as st
+import streamlit.components.v1 as components
 from google import genai
 from google.genai import types
 
@@ -321,29 +322,114 @@ target_gw = data["target_gw"]
 last_gw = data["active_or_last_gw"]
 
 # -------------------------------------------------------------
-# 4. SQUAD INSPECTION POPUP DIALOG (PITCH & BENCH DUGOUT)
+# 4. ROBUST HTML PITCH COMPONENT (ST.COMPONENTS.V1.HTML)
 # -------------------------------------------------------------
-def generate_player_card_html(p, is_bench=False):
-    cap_indicator = ""
+def build_card_html(p, is_bench=False):
+    cap = ""
     if p.get("is_captain"):
-        cap_indicator = '<span style="background: #111; color: #fff; border-radius: 50%; font-size: 8px; padding: 1px 4px; margin-left: 2px; font-weight: bold;">C</span>'
+        cap = '<span style="background:#111;color:#fff;border-radius:50%;font-size:8px;padding:1px 4px;margin-left:2px;font-weight:bold;">C</span>'
     elif p.get("is_vice"):
-        cap_indicator = '<span style="background: #555; color: #fff; border-radius: 50%; font-size: 8px; padding: 1px 4px; margin-left: 2px; font-weight: bold;">V</span>'
+        cap = '<span style="background:#555;color:#fff;border-radius:50%;font-size:8px;padding:1px 4px;margin-left:2px;font-weight:bold;">V</span>'
 
-    bench_label = f'<div style="font-size: 8px; color: #333; font-weight: 700; margin-bottom: 2px;">{p.get("bench_order", "")}. {p["pos"]}</div>' if is_bench else ""
+    top_badge = f'<div style="font-size:9px;color:#2c3e50;font-weight:700;margin-bottom:2px;">{p.get("bench_order", "")}. {p["pos"]}</div>' if is_bench else ""
 
-    return f"""
-    <div style="display: flex; flex-direction: column; align-items: center; width: 84px; margin: 3px 6px;">
-        {bench_label}
-        <img src="{p['jersey_url']}" style="height: 44px; width: 44px; object-fit: contain; filter: drop-shadow(0 2px 3px rgba(0,0,0,0.3));" />
-        <div style="background: #ffffff; color: #111; font-size: 10px; font-weight: 800; border-radius: 3px 3px 0 0; width: 100%; text-align: center; padding: 2px 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 1px 2px rgba(0,0,0,0.2);">
-            {p['name']}{cap_indicator}
-        </div>
-        <div style="background: #37003c; color: #00ff87; font-size: 9px; font-weight: 900; border-radius: 0 0 3px 3px; width: 100%; text-align: center; padding: 1px 0;">
-            {p['points']} pts
-        </div>
-    </div>
+    return (
+        f'<div style="display:flex;flex-direction:column;align-items:center;width:72px;margin:2px 4px;">'
+        f'{top_badge}'
+        f'<img src="{p["jersey_url"]}" style="height:38px;width:38px;object-fit:contain;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.3));margin-bottom:1px;" />'
+        f'<div style="background:#fff;color:#111;font-size:10px;font-weight:800;border-radius:3px 3px 0 0;width:100%;text-align:center;padding:2px 1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 2px rgba(0,0,0,0.2);">'
+        f'{p["name"]}{cap}</div>'
+        f'<div style="background:#37003c;color:#00ff87;font-size:9px;font-weight:900;border-radius:0 0 3px 3px;width:100%;text-align:center;padding:1px 0;">'
+        f'{p["points"]} pts</div>'
+        f'</div>'
+    )
+
+def build_full_pitch_html(pitch_data):
+    html = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <meta charset="utf-8">
+    <style>
+      * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 0; }
+      body { background: transparent; overflow-x: hidden; }
+      .field {
+        background: linear-gradient(180deg, #028940 0%, #027336 25%, #028940 50%, #027336 75%, #028940 100%);
+        border: 2px solid #ffffff;
+        border-radius: 12px 12px 0 0;
+        padding: 10px 4px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 100%;
+      }
+      .line {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+        margin-bottom: 6px;
+      }
+      .dugout {
+        background: linear-gradient(180deg, #d8f3dc 0%, #b7e4c7 100%);
+        border-left: 2px solid #ffffff;
+        border-right: 2px solid #ffffff;
+        border-bottom: 2px solid #ffffff;
+        border-radius: 0 0 12px 12px;
+        padding: 8px 4px 6px 4px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        width: 100%;
+      }
+      .dugout-title {
+        font-size: 9px;
+        font-weight: 800;
+        color: #1b4332;
+        letter-spacing: 1px;
+        margin-bottom: 4px;
+      }
+      .dugout-row {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 100%;
+      }
+    </style>
+    </head>
+    <body>
+      <div class="field">
     """
+
+    # Goalkeepers
+    html += '<div class="line">'
+    for p in pitch_data["GK"]: html += build_card_html(p)
+    html += '</div>'
+
+    # Defenders
+    html += '<div class="line">'
+    for p in pitch_data["DEF"]: html += build_card_html(p)
+    html += '</div>'
+
+    # Midfielders
+    html += '<div class="line">'
+    for p in pitch_data["MID"]: html += build_card_html(p)
+    html += '</div>'
+
+    # Forwards
+    html += '<div class="line" style="margin-bottom: 2px;">'
+    for p in pitch_data["FWD"]: html += build_card_html(p)
+    html += '</div></div>'
+
+    # Bench Dugout
+    html += """
+      <div class="dugout">
+        <div class="dugout-title">🪑 BENCH DUGOUT</div>
+        <div class="dugout-row">
+    """
+    for p in pitch_data["BENCH"]: html += build_card_html(p, is_bench=True)
+    html += '</div></div></body></html>'
+    return html
 
 @st.dialog("⚽ Squad Inspection", width="large")
 def show_squad_popup(team_id: int):
@@ -355,66 +441,8 @@ def show_squad_popup(team_id: int):
     st.markdown(f"### **{tdata['team_name']}** ({tdata['formation']})")
     st.caption(f"Manager: **{tdata['manager_name']}** | Gameweek {last_gw}")
 
-    pitch = tdata["pitch_data"]
-
-    # Authentic Field Container
-    pitch_html = """
-    <div style="
-        background: linear-gradient(180deg, #028940 0%, #027336 25%, #028940 50%, #027336 75%, #028940 100%);
-        border: 2px solid #ffffff;
-        border-radius: 12px 12px 0 0;
-        padding: 16px 8px 12px 8px;
-        position: relative;
-        box-shadow: inset 0 0 30px rgba(0,0,0,0.2);
-    ">
-    """
-
-    # 1. Goalkeeper Row
-    pitch_html += '<div style="display: flex; justify-content: center; align-items: center; margin-bottom: 8px;">'
-    for p in pitch["GK"]:
-        pitch_html += generate_player_card_html(p)
-    pitch_html += '</div>'
-
-    # 2. Defenders Row
-    pitch_html += '<div style="display: flex; justify-content: center; align-items: center; margin-bottom: 8px;">'
-    for p in pitch["DEF"]:
-        pitch_html += generate_player_card_html(p)
-    pitch_html += '</div>'
-
-    # 3. Midfielders Row
-    pitch_html += '<div style="display: flex; justify-content: center; align-items: center; margin-bottom: 8px;">'
-    for p in pitch["MID"]:
-        pitch_html += generate_player_card_html(p)
-    pitch_html += '</div>'
-
-    # 4. Forwards Row
-    pitch_html += '<div style="display: flex; justify-content: center; align-items: center; margin-bottom: 4px;">'
-    for p in pitch["FWD"]:
-        pitch_html += generate_player_card_html(p)
-    pitch_html += '</div>'
-
-    pitch_html += '</div>'
-
-    # 5. Bench Dugout
-    pitch_html += """
-    <div style="
-        background: linear-gradient(180deg, #e3f2fd 0%, #bbdefb 100%);
-        border-left: 2px solid #ffffff;
-        border-right: 2px solid #ffffff;
-        border-bottom: 2px solid #ffffff;
-        border-radius: 0 0 12px 12px;
-        padding: 10px 8px 8px 8px;
-    ">
-        <div style="text-align: center; font-size: 9px; font-weight: 800; color: #0d47a1; letter-spacing: 1px; margin-bottom: 4px;">
-            🪑 BENCH DUGOUT
-        </div>
-        <div style="display: flex; justify-content: center; align-items: center;">
-    """
-    for p in pitch["BENCH"]:
-        pitch_html += generate_player_card_html(p, is_bench=True)
-    pitch_html += '</div></div>'
-
-    st.markdown(pitch_html, unsafe_allow_html=True)
+    html_code = build_full_pitch_html(tdata["pitch_data"])
+    components.html(html_code, height=480, scrolling=False)
 
 # -------------------------------------------------------------
 # 5. SIDEBAR DASHBOARD
@@ -507,7 +535,6 @@ for msg in active_messages:
         st.caption(f"🗓️ {msg.get('timestamp', '')} | {msg.get('gw_tag', f'Target: GW {target_gw}')}")
         st.markdown(msg["content"])
 
-# Compact Attachment Expander
 with st.expander("📎 Attach Screenshot / Data File (Optional)", expanded=False):
     uploaded_file = st.file_uploader(
         "Upload image or CSV (Rival team screenshots, LiveFPL tables, injury reports):",
