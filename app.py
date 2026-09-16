@@ -272,6 +272,9 @@ def fetch_team_pitch_data(entry_id: int, gw: int, elements_detail: dict):
         picks_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{entry_id}/event/{gw}/picks/", headers=HEADERS).json()
         entry_res = requests.get(f"https://fantasy.premierleague.com/api/entry/{entry_id}/", headers=HEADERS).json()
         
+        gw_points = picks_res.get("entry_history", {}).get("points", 0)
+        total_points = entry_res.get("summary_overall_points", 0)
+
         pitch_data = {"GK": [], "DEF": [], "MID": [], "FWD": [], "BENCH": []}
         all_squad = []
 
@@ -283,17 +286,18 @@ def fetch_team_pitch_data(entry_id: int, gw: int, elements_detail: dict):
             jersey_suffix = "_1-66.png" if pos == "GK" else "-66.png"
             jersey_url = f"https://fantasy.premierleague.com/dist/img/shirts/standard/shirt_{club_code}{jersey_suffix}"
 
-            badge = " (C)" if p["is_captain"] else (" (V)" if p["is_vice_captain"] else "")
+            is_cap = bool(p.get("is_captain"))
+            is_vc = bool(p.get("is_vice_captain"))
+
             card = {
                 "name": info.get("name", "Unknown"),
                 "club": info.get("club_short", "UNK"),
                 "pos": pos,
-                "badge": badge,
                 "points": info.get("event_points", 0),
                 "cost": f"£{info.get('cost', 0.0)}m",
                 "jersey_url": jersey_url,
-                "is_captain": p["is_captain"],
-                "is_vice": p["is_vice_captain"]
+                "is_captain": is_cap,
+                "is_vice": is_vc
             }
             all_squad.append(card)
             if p["position"] <= 11:
@@ -309,6 +313,8 @@ def fetch_team_pitch_data(entry_id: int, gw: int, elements_detail: dict):
         return {
             "team_name": team_name,
             "manager_name": manager_name,
+            "gw_points": gw_points,
+            "total_points": total_points,
             "formation": formation,
             "pitch_data": pitch_data,
             "all_squad": all_squad
@@ -322,23 +328,23 @@ target_gw = data["target_gw"]
 last_gw = data["active_or_last_gw"]
 
 # -------------------------------------------------------------
-# 4. ROBUST HTML PITCH COMPONENT (ST.COMPONENTS.V1.HTML)
+# 4. SQUAD INSPECTION POPUP DIALOG
 # -------------------------------------------------------------
 def build_card_html(p, is_bench=False):
-    cap = ""
+    cap_html = ""
     if p.get("is_captain"):
-        cap = '<span style="background:#111;color:#fff;border-radius:50%;font-size:8px;padding:1px 4px;margin-left:2px;font-weight:bold;">C</span>'
+        cap_html = '<span style="background:#000;color:#fff;border-radius:50%;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:900;margin-left:3px;flex-shrink:0;">C</span>'
     elif p.get("is_vice"):
-        cap = '<span style="background:#555;color:#fff;border-radius:50%;font-size:8px;padding:1px 4px;margin-left:2px;font-weight:bold;">V</span>'
+        cap_html = '<span style="background:#555;color:#fff;border-radius:50%;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:900;margin-left:3px;flex-shrink:0;">V</span>'
 
-    top_badge = f'<div style="font-size:9px;color:#2c3e50;font-weight:700;margin-bottom:2px;">{p.get("bench_order", "")}. {p["pos"]}</div>' if is_bench else ""
+    top_badge = f'<div style="font-size:9px;color:#2c3e50;font-weight:800;margin-bottom:2px;">{p.get("bench_order", "")}. {p["pos"]}</div>' if is_bench else ""
 
     return (
-        f'<div style="display:flex;flex-direction:column;align-items:center;width:72px;margin:2px 4px;">'
+        f'<div style="display:flex;flex-direction:column;align-items:center;width:80px;margin:2px 4px;">'
         f'{top_badge}'
-        f'<img src="{p["jersey_url"]}" style="height:38px;width:38px;object-fit:contain;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.3));margin-bottom:1px;" />'
-        f'<div style="background:#fff;color:#111;font-size:10px;font-weight:800;border-radius:3px 3px 0 0;width:100%;text-align:center;padding:2px 1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;box-shadow:0 1px 2px rgba(0,0,0,0.2);">'
-        f'{p["name"]}{cap}</div>'
+        f'<img src="{p["jersey_url"]}" style="height:38px;width:38px;object-fit:contain;filter:drop-shadow(0 2px 3px rgba(0,0,0,0.35));margin-bottom:2px;" />'
+        f'<div style="background:#fff;color:#111;font-size:10px;font-weight:800;border-radius:3px 3px 0 0;width:100%;display:flex;align-items:center;justify-content:center;padding:2px 2px;box-shadow:0 1px 2px rgba(0,0,0,0.2);">'
+        f'<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{p["name"]}</span>{cap_html}</div>'
         f'<div style="background:#37003c;color:#00ff87;font-size:9px;font-weight:900;border-radius:0 0 3px 3px;width:100%;text-align:center;padding:1px 0;">'
         f'{p["points"]} pts</div>'
         f'</div>'
@@ -357,7 +363,7 @@ def build_full_pitch_html(pitch_data):
         background: linear-gradient(180deg, #028940 0%, #027336 25%, #028940 50%, #027336 75%, #028940 100%);
         border: 2px solid #ffffff;
         border-radius: 12px 12px 0 0;
-        padding: 10px 4px;
+        padding: 12px 4px;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -438,8 +444,18 @@ def show_squad_popup(team_id: int):
         st.error("Squad lineup could not be retrieved.")
         return
 
-    st.markdown(f"### **{tdata['team_name']}** ({tdata['formation']})")
-    st.caption(f"Manager: **{tdata['manager_name']}** | Gameweek {last_gw}")
+    # Team Name + GW Points Badge in Header
+    st.markdown(
+        f"""
+        <div style="display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px;">
+            <h3 style="margin: 0; padding: 0;">{tdata['team_name']} ({tdata['formation']})</h3>
+            <span style="background: #37003c; color: #00ff87; font-size: 14px; font-weight: 800; border-radius: 6px; padding: 2px 10px;">GW{last_gw}: {tdata['gw_points']} pts</span>
+            <span style="color: #666; font-size: 13px; font-weight: 600;">(Total: {tdata['total_points']} pts)</span>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+    st.caption(f"Manager: **{tdata['manager_name']}**")
 
     html_code = build_full_pitch_html(tdata["pitch_data"])
     components.html(html_code, height=480, scrolling=False)
@@ -461,7 +477,6 @@ with st.sidebar:
         st.header(f"🎯 Gameweek {target_gw}")
         st.caption(f"Manager: **{data['manager_name']}** | Team: **{data['team_name']}**")
 
-    # Manager Metrics Grid
     c1, c2 = st.columns(2)
     with c1:
         st.metric("Total Points", data['total_points'])
@@ -470,10 +485,8 @@ with st.sidebar:
         st.metric("Free Transfers", f"{data['free_transfers']} FT")
         st.metric("Bank Balance", f"£{data['bank']}m")
 
-    # Compact World #1 Bar
     st.info(f"🌍 **World #1:** {data['world_leader']['name']} ({data['world_leader']['team']}) — **{data['world_leader']['points']} pts**")
 
-    # Mini-League Selector & Leaderboard
     st.subheader("🏆 Mini-League Leaderboard")
     selected_league_label = st.selectbox("Select Mini-League:", list(LEAGUES_DICT.keys()), index=0)
     selected_league_id = LEAGUES_DICT[selected_league_label]
@@ -482,7 +495,6 @@ with st.sidebar:
     st.caption(f"Standings for **{league_name}**")
     st.dataframe(pd.DataFrame(league_table), hide_index=True, use_container_width=True)
 
-    # Inspect Squad with Pop-up Trigger
     st.subheader("🔍 Inspect Squad")
     manager_options = list(all_league_managers.keys())
     default_idx = 0
@@ -500,7 +512,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Price Movement Radar
     st.subheader("📈 Price Movement Radar")
     if data["price_risers"]:
         st.caption("🔥 Risers: " + ", ".join(data["price_risers"]))
@@ -509,7 +520,6 @@ with st.sidebar:
 
     st.divider()
 
-    # Conversation Threads
     st.subheader("💬 Conversation Threads")
     thread_names = list(saved_threads.keys())
     selected_thread = st.selectbox("Switch Thread:", thread_names, index=len(thread_names) - 1)
