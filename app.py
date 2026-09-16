@@ -157,6 +157,7 @@ def fetch_base_fpl_data():
         upcoming = team_fixtures.get(club_name, [])[:3]
         fdr_weights = {1: 1.3, 2: 1.15, 3: 1.0, 4: 0.85, 5: 0.7}
         projected_3gw_xp = 0.0
+        single_gw_xp = max(1.5, (form_val * 0.6 + (xgi_val * 1.5)) * fdr_weights.get(upcoming[0]["fdr"] if upcoming else 3, 1.0))
         for fix in upcoming:
             mult = fdr_weights.get(fix.get("fdr", 3), 1.0)
             base_xp = form_val * 0.6 + (xgi_val * 1.5)
@@ -175,6 +176,7 @@ def fetch_base_fpl_data():
             "event_points": p.get("event_points", 0),
             "xGI": xgi_val,
             "selected_by": p.get("selected_by_percent", "0.0"),
+            "xp_next_gw": round(single_gw_xp, 1),
             "xp_3gw": round(projected_3gw_xp, 1)
         }
         elements_detail[p["id"]] = player_dict
@@ -301,7 +303,8 @@ def fetch_team_pitch_data(team_id: int, gw: int, elements_detail: dict):
                 "jersey_url": jersey_url,
                 "is_captain": is_cap,
                 "is_vice": is_vc,
-                "xp_3gw": info.get("xp_3gw", 0.0)
+                "xp_next_gw": info.get("xp_next_gw", 3.0),
+                "xp_3gw": info.get("xp_3gw", 9.0)
             }
             all_squad.append(card)
             if p["position"] <= 11:
@@ -545,7 +548,7 @@ if "active_dialog_team" in st.session_state and st.session_state.active_dialog_t
     render_squad_dialog(st.session_state.active_dialog_team)
 
 # -------------------------------------------------------------
-# 6. FROZEN STICKY HEADER & COMPACT THREAD SELECTOR
+# 6. FIXED TOP HEADER & INLINE DROPDOWN TOGGLE
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -557,50 +560,78 @@ thread_names = list(saved_threads.keys())
 if "selected_thread" not in st.session_state or st.session_state.selected_thread not in thread_names:
     st.session_state.selected_thread = thread_names[-1]
 
-# Sticky Header anchored to Streamlit's container
+if "show_thread_picker" not in st.session_state:
+    st.session_state.show_thread_picker = False
+
+# Fixed top header CSS
 st.markdown("""
 <style>
-div[data-testid="stVerticalBlock"] > div:has(.sticky-anchor) {
-    position: sticky;
-    top: 0px;
-    z-index: 999;
-    background-color: white;
-    padding-top: 10px;
-    padding-bottom: 8px;
-    border-bottom: 2px solid #f0f2f6;
+/* Pinned fixed header container */
+.fixed-app-header {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 9999;
+    background: #ffffff;
+    border-bottom: 2px solid #edf2f7;
+    padding: 10px 24px 6px 24px;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+}
+/* Top padding so content scrolls underneath without getting hidden */
+.main .block-container {
+    padding-top: 110px !important;
 }
 </style>
-<div class="sticky-anchor"></div>
 """, unsafe_allow_html=True)
 
 with st.container():
-    st.markdown("<h2 style='margin:0; padding:0;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
-    
-    # Single-row compact bar
-    r1, r2, r3, r4 = st.columns([4, 3, 2.5, 0.7])
-    with r1:
-        st.markdown(f"**🧵 {st.session_state.selected_thread}**")
-        st.caption(f"Targeting: **GW {target_gw}** | League: **Crazy Football Fans**")
-    with r2:
-        picked = st.selectbox(
-            "Switch Thread:",
-            thread_names,
-            index=thread_names.index(st.session_state.selected_thread),
-            label_visibility="collapsed"
+    # Render Fixed Title and Inline Thread Trigger
+    t_col1, t_col2 = st.columns([10, 1])
+    with t_col1:
+        st.markdown(
+            f"""
+            <div style="line-height: 1.2;">
+                <h2 style="margin: 0; padding: 0; font-size: 1.5rem; font-weight: 800; color: #111;">⚽ FPL AI Strategist</h2>
+                <div style="display: flex; align-items: center; gap: 8px; margin-top: 3px;">
+                    <span style="font-size: 1.25rem; font-weight: 800; color: #37003c;">🧵 {st.session_state.selected_thread}</span>
+                    <span style="font-size: 0.85rem; color: #666; font-weight: 500;">(GW {target_gw} • Crazy Football Fans)</span>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True
         )
-        if picked != st.session_state.selected_thread:
-            st.session_state.selected_thread = picked
+    with t_col2:
+        # Arrow dropdown toggle
+        if st.button("⌵", key="toggle_thread_picker_btn", help="Switch or create thread"):
+            st.session_state.show_thread_picker = not st.session_state.show_thread_picker
             st.rerun()
-    with r3:
-        new_th_title = st.text_input("New Thread", placeholder="e.g. GW5 Transfers", label_visibility="collapsed")
-    with r4:
-        if st.button("➕", help="Create New Thread", use_container_width=True) and new_th_title.strip():
-            clean_t = new_th_title.strip()
-            if clean_t not in saved_threads:
-                saved_threads[clean_t] = []
-                save_all_threads(saved_threads)
-                st.session_state.selected_thread = clean_t
+
+    # Dropdown menu appears only when arrow is clicked
+    if st.session_state.show_thread_picker:
+        p_col1, p_col2, p_col3 = st.columns([5, 4, 1])
+        with p_col1:
+            picked = st.selectbox(
+                "Select thread:",
+                thread_names,
+                index=thread_names.index(st.session_state.selected_thread),
+                label_visibility="collapsed"
+            )
+            if picked != st.session_state.selected_thread:
+                st.session_state.selected_thread = picked
+                st.session_state.show_thread_picker = False
                 st.rerun()
+        with p_col2:
+            new_title = st.text_input("New Thread Name", placeholder="e.g. GW5 Transfers", label_visibility="collapsed")
+        with p_col3:
+            if st.button("➕", help="Add thread", use_container_width=True) and new_title.strip():
+                c_name = new_title.strip()
+                if c_name not in saved_threads:
+                    saved_threads[c_name] = []
+                    save_all_threads(saved_threads)
+                    st.session_state.selected_thread = c_name
+                    st.session_state.show_thread_picker = False
+                    st.rerun()
 
 # -------------------------------------------------------------
 # 7. CHAT DISPLAY & AI STRATEGIST
@@ -645,25 +676,44 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
 
+    # Clean, sanitized expected points calculation table
+    xp_squad_lines = []
+    starter_total_next_gw = 0.0
+    starter_total_3gw = 0.0
+
+    if user_pitch_info and user_pitch_info["all_squad"]:
+        for p in user_pitch_info["all_squad"]:
+            nxt = p.get("xp_next_gw", 3.0)
+            t3 = p.get("xp_3gw", 9.0)
+            if not p.get("bench_order"):
+                starter_total_next_gw += nxt
+                starter_total_3gw += t3
+            cap_mark = " (C)" if p.get("is_captain") else ""
+            xp_squad_lines.append(f"- {p['name']}{cap_mark} [{p['pos']}]: Next GW xP = {nxt:.1f}, 3-GW xP = {t3:.1f}")
+
+    squad_xp_text = "\n".join(xp_squad_lines)
+
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
         f"Primary League: Crazy Football Fans (ID: 987870). All decisions must optimize winning this league.\n"
         f"Target Gameweek: GW {target_gw}. Bank: £{data['bank']}m. Free Transfers: {data['free_transfers']} FT.\n"
         f"Favorite Club: {MY_FAVORITE_CLUB}. ANTI-FAN-BIAS: Never recommend {MY_FAVORITE_CLUB} players out of emotion; justify with data.\n\n"
-        "DECISION RULES:\n"
+        "DIRECTIVES:\n"
         "1. Identify Squad Weak Links (poor form, low xGI, or tough FDR fixtures).\n"
         "2. Deliver Primary SELL -> BUY plan using 3-GW Expected Points (xP), plus an immediate Plan B alternative.\n"
-        "3. Multi-week staged planning: Outline Step 1 for this week and Step 2 for next week.\n"
+        "3. When asked for expected points, present the squad breakdown clearly by position and state the starting XI total forecast.\n"
         "4. Chip Advice: Recommend when to hold or deploy Wildcard, Free Hit, Bench Boost, or Triple Captain.\n"
         "5. Output fixtures/tables in clean Markdown tables. Never deflect with 'What do you want to do?'."
     )
 
     context_payload = (
-        f"--- LIVE SQUAD & STATISTICAL CONTEXT ---\n"
-        f"Current Formation: {user_pitch_info['formation'] if user_pitch_info else '3-4-3'}\n"
-        f"User Lineup & 3GW xP Projections: {[{'player': p['name'], 'pos': p['pos'], 'cost': p['cost'], '3GW_xP': p.get('xp_3gw', 0)} for p in (user_pitch_info['all_squad'] if user_pitch_info else [])]}\n"
-        f"Scouting Radar Market Targets: {data['scouting_radar']}\n"
-        f"Mini-League Top 5: {league_table[:5]}\n"
+        f"DATA FOR GAMEWEEK {target_gw}:\n"
+        f"Starting XI Projected Total: Next GW = {starter_total_next_gw:.1f} pts | 3-GW = {starter_total_3gw:.1f} pts\n"
+        f"Player Breakdown:\n{squad_xp_text}\n\n"
+        f"Scouting Radar Targets:\n"
+        f"Top FWDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_forwards']]}\n"
+        f"Top MIDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_midfielders']]}\n"
+        f"Top DEFs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_defenders']]}\n\n"
         f"User Prompt: {prompt}"
     )
 
