@@ -548,7 +548,7 @@ if "active_dialog_team" in st.session_state and st.session_state.active_dialog_t
     render_squad_dialog(st.session_state.active_dialog_team)
 
 # -------------------------------------------------------------
-# 6. HEADER & INLINE COMPACT THREAD SELECTOR
+# 6. AUTHENTIC STICKY HEADER & COMPACT INLINE THREAD SELECTOR
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -563,6 +563,7 @@ if "selected_thread" not in st.session_state or st.session_state.selected_thread
 if "show_thread_picker" not in st.session_state:
     st.session_state.show_thread_picker = False
 
+# Pin header cleanly to the top of the main container
 st.markdown("""
 <style>
 div[data-testid="stVerticalBlock"] > div:has(.sticky-app-bar) {
@@ -570,8 +571,8 @@ div[data-testid="stVerticalBlock"] > div:has(.sticky-app-bar) {
     top: 0;
     z-index: 999;
     background-color: white;
-    padding-top: 6px;
-    padding-bottom: 8px;
+    padding-top: 4px;
+    padding-bottom: 6px;
     border-bottom: 2px solid #f0f2f6;
 }
 .sticky-app-bar {
@@ -584,10 +585,11 @@ div[data-testid="stVerticalBlock"] > div:has(.sticky-app-bar) {
 with st.container():
     st.markdown("<h2 style='margin:0; padding:0; font-size:1.75rem;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
 
-    head_col1, head_col2, _ = st.columns([0.45, 0.08, 0.47])
-    with head_col1:
+    # Clean inline title + adjacent chevron toggle button
+    t_col1, t_col2, _ = st.columns([0.45, 0.08, 0.47])
+    with t_col1:
         st.markdown(f"<div style='font-size:1.25rem; font-weight:800; color:#37003c; padding-top:2px;'>🧵 {st.session_state.selected_thread}</div>", unsafe_allow_html=True)
-    with head_col2:
+    with t_col2:
         if st.button("⌵", key="toggle_thread_btn", help="Switch or create thread"):
             st.session_state.show_thread_picker = not st.session_state.show_thread_picker
             st.rerun()
@@ -620,7 +622,7 @@ with st.container():
                     st.rerun()
 
 # -------------------------------------------------------------
-# 7. CHAT DISPLAY & AI STRATEGIST (UPGRADED TO GEMINI-3.6-FLASH)
+# 7. CHAT DISPLAY & DYNAMIC INTENT-BASED AI STRATEGIST
 # -------------------------------------------------------------
 current_thread = st.session_state.selected_thread
 
@@ -657,6 +659,7 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
 
+    # Prepare Expected Points (xP) Tables for the model
     xp_squad_lines = []
     starter_total_next_gw = 0.0
     starter_total_3gw = 0.0
@@ -673,20 +676,21 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     squad_xp_table = "\n".join(xp_squad_lines)
 
+    # Dynamic system instruction without rigid boilerplate structures
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
         f"Primary League: Crazy Football Fans (ID: 987870). Target Gameweek: GW {target_gw}.\n"
         f"Bank: £{data['bank']}m. Free Transfers: {data['free_transfers']} FT. Anti-Fan Bias: Support for {MY_FAVORITE_CLUB} must never dictate decisions.\n\n"
-        "RESPONSE RULES:\n"
-        "1. Identify Squad Weak Links based on form, xGI, or difficult FDR runs.\n"
-        "2. Deliver Primary SELL -> BUY plan using Expected Points (xP), plus an immediate Plan B alternative.\n"
-        "3. When user asks for Expected Points (xP), present their full lineup breakdown by position and cite the total starting XI projected score.\n"
-        "4. Output fixtures and player comparisons in neat Markdown tables. Never deflect with 'What do you want to do?'."
+        "COMMUNICATION & INTENT DIRECTIVES:\n"
+        "- DYNAMIC ADAPTATION: Answer the user's specific prompt directly. NEVER force a repetitive boilerplate template (such as always generating Weak Link Analysis or Plan A/Plan B) unless the user explicitly asks for a full transfer plan.\n"
+        "- Direct Factual / Statistical Inquiries: If the user asks about points, projected scores, or specific player comparisons (e.g. Mbeumo vs Szoboszlai), provide the exact data, comparative table, and concise verdict without unprompted transfer pitches.\n"
+        "- Rival Inquiries: If the user asks about a rival manager or team, analyze that specific rival using available league data.\n"
+        "- Decisive Advice: When advice is requested, be assertive with numbers, stats (xP, xGI, FDR), and tactical reasoning. Never deflect with 'What do you want to do?'."
     )
 
     prompt_context = (
-        f"### GAMEWEEK {target_gw} STATISTICAL FEED\n"
-        f"Starting XI Forecast Total: Next GW = {starter_total_next_gw:.1f} pts | 3-GW Total = {starter_total_3gw:.1f} pts\n\n"
+        f"### LIVE GAMEWEEK {target_gw} CONTEXT\n"
+        f"User Starting XI Projected Total: Next GW = {starter_total_next_gw:.1f} pts | 3-GW Total = {starter_total_3gw:.1f} pts\n\n"
         f"Current Squad Expected Points Matrix:\n"
         f"| Player | Position | Cost | GW{target_gw} xP | 3-GW xP |\n"
         f"| :--- | :--- | :--- | :--- | :--- |\n"
@@ -695,7 +699,8 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
         f"- Top FWDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_forwards']]}\n"
         f"- Top MIDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_midfielders']]}\n"
         f"- Top DEFs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_defenders']]}\n\n"
-        f"User Prompt: {prompt}"
+        f"Mini-League Top 5 Overview: {league_table[:5]}\n\n"
+        f"User Query: {prompt}"
     )
 
     contents = []
@@ -717,9 +722,8 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
     client = genai.Client(api_key=GEMINI_API_KEY)
 
     with st.chat_message("assistant"):
-        with st.spinner("Calculating expected points, lineup forecasts, and transfer paths..."):
+        with st.spinner("Analyzing data and formulating response..."):
             try:
-                # Updated to gemini-3.6-flash to resolve the 404 NOT_FOUND error
                 response = client.models.generate_content(
                     model="gemini-3.6-flash",
                     contents=contents,
