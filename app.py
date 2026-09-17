@@ -548,7 +548,7 @@ if "active_dialog_team" in st.session_state and st.session_state.active_dialog_t
     render_squad_dialog(st.session_state.active_dialog_team)
 
 # -------------------------------------------------------------
-# 6. AUTHENTIC STICKY HEADER & COMPACT INLINE THREAD SELECTOR
+# 6. HEADER & INLINE COMPACT THREAD SELECTOR
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -563,7 +563,6 @@ if "selected_thread" not in st.session_state or st.session_state.selected_thread
 if "show_thread_picker" not in st.session_state:
     st.session_state.show_thread_picker = False
 
-# Robust CSS to ensure header freezes to top of scroll
 st.markdown("""
 <style>
 div[data-testid="stVerticalBlock"] > div:has(.sticky-app-bar) {
@@ -584,8 +583,7 @@ div[data-testid="stVerticalBlock"] > div:has(.sticky-app-bar) {
 
 with st.container():
     st.markdown("<h2 style='margin:0; padding:0; font-size:1.75rem;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
-    
-    # Inline compact row: Thread title + tight chevron button
+
     head_col1, head_col2, _ = st.columns([0.45, 0.08, 0.47])
     with head_col1:
         st.markdown(f"<div style='font-size:1.25rem; font-weight:800; color:#37003c; padding-top:2px;'>🧵 {st.session_state.selected_thread}</div>", unsafe_allow_html=True)
@@ -622,14 +620,14 @@ with st.container():
                     st.rerun()
 
 # -------------------------------------------------------------
-# 7. CHAT DISPLAY & AI STRATEGIST (CLEAN CONTENT GENERATION)
+# 7. CHAT DISPLAY & AI STRATEGIST (UPGRADED TO GEMINI-3.6-FLASH)
 # -------------------------------------------------------------
 current_thread = st.session_state.selected_thread
 
-# Purge any old client tracebacks/exceptions so history stays pristine
 clean_active_messages = []
 for m in saved_threads.get(current_thread, []):
-    if "google.genai.errors" not in m.get("content", "") and "ClientError" not in m.get("content", ""):
+    content_text = m.get("content", "")
+    if "Strategy engine error" not in content_text and "google.genai.errors" not in content_text and "ClientError" not in content_text:
         clean_active_messages.append(m)
 
 for msg in clean_active_messages:
@@ -659,7 +657,6 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
 
-    # Prepare Expected Points (xP) Tables for the model
     xp_squad_lines = []
     starter_total_next_gw = 0.0
     starter_total_3gw = 0.0
@@ -701,7 +698,6 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
         f"User Prompt: {prompt}"
     )
 
-    # Reconstruct pristine history list
     contents = []
     for m in clean_active_messages[:-1]:
         contents.append(
@@ -711,7 +707,6 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
             )
         )
 
-    # Append current turn
     current_parts = []
     if uploaded_file:
         current_parts.append(types.Part.from_bytes(data=uploaded_file.read(), mime_type=uploaded_file.type))
@@ -724,8 +719,9 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
     with st.chat_message("assistant"):
         with st.spinner("Calculating expected points, lineup forecasts, and transfer paths..."):
             try:
+                # Updated to gemini-3.6-flash to resolve the 404 NOT_FOUND error
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.6-flash",
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
