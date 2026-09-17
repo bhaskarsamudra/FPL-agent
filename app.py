@@ -208,7 +208,6 @@ def fetch_base_fpl_data():
             ft_acc = min(5, remaining + 1)
         calculated_ft = ft_acc
 
-    # Ensure accurate baseline for current season state
     calculated_ft = max(calculated_ft, 2)
 
     wl_standings = requests.get("https://fantasy.premierleague.com/api/leagues-classic/314/standings/", headers=HEADERS).json()
@@ -553,7 +552,6 @@ with st.sidebar:
         st.header(f"🎯 Gameweek {target_gw}")
         st.caption(f"Manager: **{data['manager_name']}** | Team: **{data['team_name']}**")
 
-    # Clean Read-Only Metric Grid
     c1, c2 = st.columns(2)
     with c1:
         st.metric("Total Points", data['total_points'])
@@ -816,18 +814,3 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
                 save_all_threads(saved_threads)
             except Exception as e:
                 st.error(f"Strategy engine error: {str(e)}")
-```The error occurs because markdown text or an AI response block was accidentally pasted directly into your Python file without being commented out or formatted as a string. Python is encountering backticks (```` ``` ````) at line 822, which is invalid syntax.
-
-**How to Fix It**
-
-Open **`/mount/src/fpl-agent/app.py`** in your repository and navigate to **line 822**:
-
-* **If it is an unwanted text block:** Delete the entire block of explanatory text along with the enclosing triple backticks (```` ``` ````).
-* **If it is meant to be a comment:** Prefix each line with a `#` or wrap the text in triple quotes (`""" ... """`).
-* **If it is meant to be displayed in your Streamlit app:** Wrap it inside a Streamlit display call:
-  ```python
-  st.markdown(
-      """
-  This is a common limitation with third-party Fantasy Premier League (FPL) browser extensions and planning tools.
-  """
-  )
