@@ -548,7 +548,7 @@ if "active_dialog_team" in st.session_state and st.session_state.active_dialog_t
     render_squad_dialog(st.session_state.active_dialog_team)
 
 # -------------------------------------------------------------
-# 6. HEADER & INLINE COMPACT THREAD PICKER
+# 6. AUTHENTIC STICKY HEADER & COMPACT INLINE THREAD SELECTOR
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -563,53 +563,76 @@ if "selected_thread" not in st.session_state or st.session_state.selected_thread
 if "show_thread_picker" not in st.session_state:
     st.session_state.show_thread_picker = False
 
-st.title("⚽ FPL AI Strategist")
+# Robust CSS to ensure header freezes to top of scroll
+st.markdown("""
+<style>
+div[data-testid="stVerticalBlock"] > div:has(.sticky-app-bar) {
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    background-color: white;
+    padding-top: 6px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #f0f2f6;
+}
+.sticky-app-bar {
+    width: 100%;
+}
+</style>
+<div class="sticky-app-bar"></div>
+""", unsafe_allow_html=True)
 
-# Clean Header Bar with Inline Chevron
-t_col_name, t_col_chevron = st.columns([12, 1])
-with t_col_name:
-    st.markdown(f"### 🧵 {st.session_state.selected_thread}")
-    st.caption(f"Targeting: **Gameweek {target_gw}** | Active Mini-League: **Crazy Football Fans**")
-with t_col_chevron:
-    if st.button("⌵", key="toggle_thread_btn", help="Switch or create thread", use_container_width=True):
-        st.session_state.show_thread_picker = not st.session_state.show_thread_picker
-        st.rerun()
-
-# Expandable picker tray directly beneath thread title
-if st.session_state.show_thread_picker:
-    st.markdown("---")
-    pick_col1, pick_col2, pick_col3 = st.columns([4, 4, 1])
-    with pick_col1:
-        picked = st.selectbox(
-            "Select thread:",
-            thread_names,
-            index=thread_names.index(st.session_state.selected_thread),
-            label_visibility="collapsed"
-        )
-        if picked != st.session_state.selected_thread:
-            st.session_state.selected_thread = picked
-            st.session_state.show_thread_picker = False
+with st.container():
+    st.markdown("<h2 style='margin:0; padding:0; font-size:1.75rem;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
+    
+    # Inline compact row: Thread title + tight chevron button
+    head_col1, head_col2, _ = st.columns([0.45, 0.08, 0.47])
+    with head_col1:
+        st.markdown(f"<div style='font-size:1.25rem; font-weight:800; color:#37003c; padding-top:2px;'>🧵 {st.session_state.selected_thread}</div>", unsafe_allow_html=True)
+    with head_col2:
+        if st.button("⌵", key="toggle_thread_btn", help="Switch or create thread"):
+            st.session_state.show_thread_picker = not st.session_state.show_thread_picker
             st.rerun()
-    with pick_col2:
-        new_th_title = st.text_input("New Thread Name", placeholder="e.g. GW5 Wildcard", label_visibility="collapsed")
-    with pick_col3:
-        if st.button("➕", help="Add thread", use_container_width=True) and new_th_title.strip():
-            clean_name = new_th_title.strip()
-            if clean_name not in saved_threads:
-                saved_threads[clean_name] = []
-                save_all_threads(saved_threads)
-                st.session_state.selected_thread = clean_name
+
+    st.markdown(f"<div style='font-size:0.85rem; color:#666; margin-top:-4px; margin-bottom:6px;'>Targeting: <b>Gameweek {target_gw}</b> | Active Mini-League: <b>Crazy Football Fans</b></div>", unsafe_allow_html=True)
+
+    if st.session_state.show_thread_picker:
+        p_col1, p_col2, p_col3 = st.columns([5, 4, 1])
+        with p_col1:
+            picked = st.selectbox(
+                "Select thread:",
+                thread_names,
+                index=thread_names.index(st.session_state.selected_thread),
+                label_visibility="collapsed"
+            )
+            if picked != st.session_state.selected_thread:
+                st.session_state.selected_thread = picked
                 st.session_state.show_thread_picker = False
                 st.rerun()
-    st.markdown("---")
+        with p_col2:
+            new_title = st.text_input("New Thread Name", placeholder="e.g. GW5 Transfers", label_visibility="collapsed")
+        with p_col3:
+            if st.button("➕", help="Add thread", use_container_width=True) and new_title.strip():
+                c_name = new_title.strip()
+                if c_name not in saved_threads:
+                    saved_threads[c_name] = []
+                    save_all_threads(saved_threads)
+                    st.session_state.selected_thread = c_name
+                    st.session_state.show_thread_picker = False
+                    st.rerun()
 
 # -------------------------------------------------------------
-# 7. CHAT DISPLAY & AI STRATEGIST
+# 7. CHAT DISPLAY & AI STRATEGIST (CLEAN CONTENT GENERATION)
 # -------------------------------------------------------------
 current_thread = st.session_state.selected_thread
-active_messages = saved_threads.get(current_thread, [])
 
-for msg in active_messages:
+# Purge any old client tracebacks/exceptions so history stays pristine
+clean_active_messages = []
+for m in saved_threads.get(current_thread, []):
+    if "google.genai.errors" not in m.get("content", "") and "ClientError" not in m.get("content", ""):
+        clean_active_messages.append(m)
+
+for msg in clean_active_messages:
     with st.chat_message(msg["role"]):
         st.caption(f"🗓️ {msg.get('timestamp', '')} | {msg.get('gw_tag', f'Target: GW {target_gw}')}")
         st.markdown(msg["content"])
@@ -627,94 +650,100 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
     gw_badge = f"⚽ Target: GW {target_gw}" if not data["is_live_matchday"] else f"⚽ Live: GW {last_gw} (Target: GW {target_gw})"
 
     user_entry = {"role": "user", "content": prompt, "timestamp": now_str, "gw_tag": gw_badge}
-    active_messages.append(user_entry)
+    clean_active_messages.append(user_entry)
     with st.chat_message("user"):
         st.caption(f"🗓️ {now_str} | {gw_badge}")
         st.markdown(prompt)
         if uploaded_file:
             st.caption(f"📎 Attached: {uploaded_file.name}")
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    history_contents = []
-    for m in active_messages[:-1]:
-        history_contents.append(
-            types.Content(
-                role="user" if m["role"] == "user" else "model",
-                parts=[types.Part.from_text(text=m["content"])]
-            )
-        )
-
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
 
+    # Prepare Expected Points (xP) Tables for the model
     xp_squad_lines = []
     starter_total_next_gw = 0.0
     starter_total_3gw = 0.0
 
     if user_pitch_info and user_pitch_info["all_squad"]:
         for p in user_pitch_info["all_squad"]:
-            nxt = p.get("xp_next_gw", 3.0)
-            t3 = p.get("xp_3gw", 9.0)
+            nxt = float(p.get("xp_next_gw", 3.0))
+            t3 = float(p.get("xp_3gw", 9.0))
             if not p.get("bench_order"):
                 starter_total_next_gw += nxt
                 starter_total_3gw += t3
             cap_mark = " (C)" if p.get("is_captain") else ""
-            xp_squad_lines.append(f"- {p['name']}{cap_mark} [{p['pos']}]: GW{target_gw} xP = {nxt:.1f}, 3-GW xP = {t3:.1f}")
+            xp_squad_lines.append(f"| {p['name']}{cap_mark} | {p['pos']} | £{p['cost']} | {nxt:.1f} | {t3:.1f} |")
 
-    squad_xp_text = "\n".join(xp_squad_lines)
+    squad_xp_table = "\n".join(xp_squad_lines)
 
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
-        f"Primary League: Crazy Football Fans (ID: 987870). All decisions must optimize winning this league.\n"
-        f"Target Gameweek: GW {target_gw}. Bank: £{data['bank']}m. Free Transfers: {data['free_transfers']} FT.\n"
-        f"Favorite Club: {MY_FAVORITE_CLUB}. ANTI-FAN-BIAS: Never recommend {MY_FAVORITE_CLUB} players out of emotion; justify with data.\n\n"
-        "DECISION RULES:\n"
-        "1. Identify Squad Weak Links (poor form, low xGI, or tough FDR fixtures).\n"
-        "2. Deliver Primary SELL -> BUY plan using 3-GW Expected Points (xP), plus an immediate Plan B alternative.\n"
-        "3. When asked for expected points, present the squad breakdown clearly by position and state the starting XI total forecast.\n"
-        "4. Chip Advice: Recommend when to hold or deploy Wildcard, Free Hit, Bench Boost, or Triple Captain.\n"
-        "5. Output fixtures/tables in clean Markdown tables. Never deflect with 'What do you want to do?'."
+        f"Primary League: Crazy Football Fans (ID: 987870). Target Gameweek: GW {target_gw}.\n"
+        f"Bank: £{data['bank']}m. Free Transfers: {data['free_transfers']} FT. Anti-Fan Bias: Support for {MY_FAVORITE_CLUB} must never dictate decisions.\n\n"
+        "RESPONSE RULES:\n"
+        "1. Identify Squad Weak Links based on form, xGI, or difficult FDR runs.\n"
+        "2. Deliver Primary SELL -> BUY plan using Expected Points (xP), plus an immediate Plan B alternative.\n"
+        "3. When user asks for Expected Points (xP), present their full lineup breakdown by position and cite the total starting XI projected score.\n"
+        "4. Output fixtures and player comparisons in neat Markdown tables. Never deflect with 'What do you want to do?'."
     )
 
-    context_payload = (
-        f"DATA FOR GAMEWEEK {target_gw}:\n"
-        f"Starting XI Projected Total: Next GW = {starter_total_next_gw:.1f} pts | 3-GW = {starter_total_3gw:.1f} pts\n"
-        f"Player Breakdown:\n{squad_xp_text}\n\n"
-        f"Scouting Radar Targets:\n"
-        f"Top FWDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_forwards']]}\n"
-        f"Top MIDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_midfielders']]}\n"
-        f"Top DEFs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_defenders']]}\n\n"
+    prompt_context = (
+        f"### GAMEWEEK {target_gw} STATISTICAL FEED\n"
+        f"Starting XI Forecast Total: Next GW = {starter_total_next_gw:.1f} pts | 3-GW Total = {starter_total_3gw:.1f} pts\n\n"
+        f"Current Squad Expected Points Matrix:\n"
+        f"| Player | Position | Cost | GW{target_gw} xP | 3-GW xP |\n"
+        f"| :--- | :--- | :--- | :--- | :--- |\n"
+        f"{squad_xp_table}\n\n"
+        f"Market Scouting Targets:\n"
+        f"- Top FWDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_forwards']]}\n"
+        f"- Top MIDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_midfielders']]}\n"
+        f"- Top DEFs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_defenders']]}\n\n"
         f"User Prompt: {prompt}"
     )
 
-    current_prompt_parts = []
+    # Reconstruct pristine history list
+    contents = []
+    for m in clean_active_messages[:-1]:
+        contents.append(
+            types.Content(
+                role="user" if m["role"] == "user" else "model",
+                parts=[types.Part.from_text(text=m["content"])]
+            )
+        )
+
+    # Append current turn
+    current_parts = []
     if uploaded_file:
-        file_bytes = uploaded_file.read()
-        mime_type = uploaded_file.type
-        current_prompt_parts.append(types.Part.from_bytes(data=file_bytes, mime_type=mime_type))
-        current_prompt_parts.append(types.Part.from_text(text=f"Attached file: {uploaded_file.name}."))
-    current_prompt_parts.append(types.Part.from_text(text=context_payload))
+        current_parts.append(types.Part.from_bytes(data=uploaded_file.read(), mime_type=uploaded_file.type))
+        current_parts.append(types.Part.from_text(text=f"Attached file: {uploaded_file.name}."))
+    current_parts.append(types.Part.from_text(text=prompt_context))
+    contents.append(types.Content(role="user", parts=current_parts))
+
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing expected points, formation, and transfer routes..."):
-            chat = client.chats.create(
-                model="gemini-2.5-flash",
-                history=history_contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.2
+        with st.spinner("Calculating expected points, lineup forecasts, and transfer paths..."):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_instruction,
+                        temperature=0.2
+                    )
                 )
-            )
-            response = chat.send_message(current_prompt_parts)
-            st.caption(f"🗓️ {now_str} | {gw_badge}")
-            st.markdown(response.text)
+                model_reply = response.text
+                st.caption(f"🗓️ {now_str} | {gw_badge}")
+                st.markdown(model_reply)
 
-    assistant_entry = {
-        "role": "assistant",
-        "content": response.text,
-        "timestamp": now_str,
-        "gw_tag": gw_badge
-    }
-    active_messages.append(assistant_entry)
-
-    saved_threads[current_thread] = active_messages
-    save_all_threads(saved_threads)
+                assistant_entry = {
+                    "role": "assistant",
+                    "content": model_reply,
+                    "timestamp": now_str,
+                    "gw_tag": gw_badge
+                }
+                clean_active_messages.append(assistant_entry)
+                saved_threads[current_thread] = clean_active_messages
+                save_all_threads(saved_threads)
+            except Exception as e:
+                st.error(f"Strategy engine error: {str(e)}")
