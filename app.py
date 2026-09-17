@@ -98,7 +98,7 @@ def save_all_threads(threads):
         pass
 
 # -------------------------------------------------------------
-# 3. ADVANCED STATS & SCOUTING ENGINE
+# 3. ADVANCED STATS & CHIP PARSER
 # -------------------------------------------------------------
 @st.cache_data(ttl=300)
 def fetch_base_fpl_data():
@@ -186,13 +186,20 @@ def fetch_base_fpl_data():
     my_entry = requests.get(f"https://fantasy.premierleague.com/api/entry/{MY_TEAM_ID}/", headers=HEADERS).json()
     my_history = requests.get(f"https://fantasy.premierleague.com/api/entry/{MY_TEAM_ID}/history/", headers=HEADERS).json()
 
-    free_transfers_available = 1
-    recent_history = my_history.get("current", [])
-    if recent_history:
-        last_gw_stat = recent_history[-1]
-        free_transfers_available = min(5, max(1, 1 if last_gw_stat.get("event_transfers", 0) > 0 else 2))
+    # Exact Multi-GW Free Transfer Accumulator
+    calculated_ft = 1
+    past_gws = my_history.get("current", [])
+    if past_gws:
+        ft_acc = 1
+        for gw_stat in past_gws:
+            transfers = gw_stat.get("event_transfers", 0)
+            ft_acc = max(0, ft_acc - transfers)
+            ft_acc = min(5, ft_acc + 1)
+        calculated_ft = ft_acc
 
-    chips_used = [c["name"] for c in my_history.get("chips", [])]
+    # Chips data
+    chips_played_data = {c["name"]: c.get("event") for c in my_history.get("chips", [])}
+
     wl_standings = requests.get("https://fantasy.premierleague.com/api/leagues-classic/314/standings/", headers=HEADERS).json()
     world_leader = wl_standings["standings"]["results"][0]
 
@@ -206,8 +213,8 @@ def fetch_base_fpl_data():
         "latest_gw_points": my_picks.get("entry_history", {}).get("points", 0),
         "overall_rank": my_entry.get("summary_overall_rank"),
         "bank": my_picks.get("entry_history", {}).get("bank", 0) / 10,
-        "free_transfers": free_transfers_available,
-        "chips_used": chips_used,
+        "calculated_ft": calculated_ft,
+        "chips_played": chips_played_data,
         "elements_detail": elements_detail,
         "risers_list": risers_list[:8],
         "fallers_list": fallers_list[:8],
@@ -484,8 +491,53 @@ def render_squad_dialog(team_id: int):
     components.html(html_code, height=480, scrolling=False)
 
 # -------------------------------------------------------------
-# 5. SIDEBAR DASHBOARD
+# 5. SIDEBAR DASHBOARD & FPL CHIP CARDS
 # -------------------------------------------------------------
+if "custom_ft" not in st.session_state:
+    st.session_state.custom_ft = data["calculated_ft"]
+
+# Chip SVG Icons
+CHIP_SVGS = {
+    "wildcard": '''<svg width="32" height="32" viewBox="0 0 40 40" fill="none"><polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="#00d4ff" stroke="#0072ff" stroke-width="2"/><polygon points="20,10 23,16 30,17 25,22 26,29 20,25 14,29 15,22 10,17 17,16" fill="#ffffff"/></svg>''',
+    "freehit": '''<svg width="32" height="32" viewBox="0 0 40 40" fill="none"><polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="#00d4ff" stroke="#0072ff" stroke-width="2"/><rect x="11" y="14" width="18" height="12" rx="2" fill="#ffffff"/><circle cx="11" cy="20" r="2.5" fill="#00d4ff"/><circle cx="29" cy="20" r="2.5" fill="#00d4ff"/><text x="20" y="22" font-size="6" font-weight="900" fill="#0072ff" text-anchor="middle">FREE</text></svg>''',
+    "bboost": '''<svg width="32" height="32" viewBox="0 0 40 40" fill="none"><polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="#00d4ff" stroke="#0072ff" stroke-width="2"/><rect x="11" y="22" width="18" height="4" rx="1.5" fill="#ffffff"/><path d="M15 26v4M25 26v4" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/><path d="M20 11l-5 6h10l-5-6z" fill="#ffffff"/></svg>''',
+    "3xc": '''<svg width="32" height="32" viewBox="0 0 40 40" fill="none"><polygon points="20,2 36,11 36,29 20,38 4,29 4,11" fill="#00d4ff" stroke="#0072ff" stroke-width="2"/><circle cx="20" cy="20" r="9" fill="#ffffff"/><text x="20" y="24" font-size="11" font-weight="900" fill="#0072ff" text-anchor="middle">3C</text></svg>'''
+}
+
+CHIP_META = {
+    "wildcard": "Wildcard",
+    "freehit": "Free Hit",
+    "bboost": "Bench Boost",
+    "3xc": "Triple Captain"
+}
+
+def render_chip_card_html(chip_id):
+    label = CHIP_META[chip_id]
+    svg_icon = CHIP_SVGS[chip_id]
+    is_played = chip_id in data["chips_played"]
+    gw_num = data["chips_played"].get(chip_id)
+
+    if is_played:
+        return f"""
+        <div style="background:#f8f9fa; border:1px solid #e2e8f0; border-radius:10px; padding:8px 4px; text-align:center; margin-bottom:8px; opacity:0.65;">
+            <div style="filter: grayscale(100%); display:flex; justify-content:center; margin-bottom:3px;">{svg_icon}</div>
+            <div style="font-size:11px; font-weight:800; color:#64748b;">{label}</div>
+            <div style="background:#37003c; color:#ffffff; font-size:9px; font-weight:800; border-radius:4px; padding:2px 6px; margin-top:3px; display:inline-block;">
+                Played GW {gw_num}
+            </div>
+        </div>
+        """
+    else:
+        return f"""
+        <div style="background:#ffffff; border:1px solid #e0e7ff; border-radius:10px; padding:8px 4px; text-align:center; margin-bottom:8px; box-shadow:0 1px 3px rgba(0,0,0,0.06);">
+            <div style="display:flex; justify-content:center; margin-bottom:3px;">{svg_icon}</div>
+            <div style="font-size:11px; font-weight:800; color:#37003c;">{label}</div>
+            <div style="color:#00875a; font-size:9px; font-weight:800; margin-top:3px;">
+                Available
+            </div>
+        </div>
+        """
+
 with st.sidebar:
     if data["is_live_matchday"]:
         st.header(f"⚽ Live: GW {last_gw}")
@@ -499,8 +551,20 @@ with st.sidebar:
         st.metric("Total Points", data['total_points'])
         st.metric("Overall Rank", f"{data['overall_rank']:,}")
     with c2:
-        st.metric("Free Transfers", f"{data['free_transfers']} FT")
         st.metric("Bank Balance", f"£{data['bank']}m")
+        st.session_state.custom_ft = st.number_input(
+            "Free Transfers", min_value=1, max_value=5, value=st.session_state.custom_ft, step=1
+        )
+
+    # 2x2 Official FPL Chip Grid
+    st.markdown("<div style='font-size:13px; font-weight:800; color:#37003c; margin: 10px 0 6px 0;'>🃏 FPL Chips</div>", unsafe_allow_html=True)
+    chip_c1, chip_c2 = st.columns(2)
+    with chip_c1:
+        st.markdown(render_chip_card_html("wildcard"), unsafe_allow_html=True)
+        st.markdown(render_chip_card_html("bboost"), unsafe_allow_html=True)
+    with chip_c2:
+        st.markdown(render_chip_card_html("freehit"), unsafe_allow_html=True)
+        st.markdown(render_chip_card_html("3xc"), unsafe_allow_html=True)
 
     st.info(f"🌍 **World #1:** {data['world_leader']['name']} ({data['world_leader']['team']}) — **{data['world_leader']['points']} pts**")
 
@@ -548,7 +612,7 @@ if "active_dialog_team" in st.session_state and st.session_state.active_dialog_t
     render_squad_dialog(st.session_state.active_dialog_team)
 
 # -------------------------------------------------------------
-# 6. AUTHENTIC STICKY HEADER & COMPACT INLINE THREAD SELECTOR
+# 6. HEADER & INLINE COMPACT THREAD SELECTOR
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -563,63 +627,42 @@ if "selected_thread" not in st.session_state or st.session_state.selected_thread
 if "show_thread_picker" not in st.session_state:
     st.session_state.show_thread_picker = False
 
-# Pin header cleanly to the top of the main container
-st.markdown("""
-<style>
-div[data-testid="stVerticalBlock"] > div:has(.sticky-app-bar) {
-    position: sticky;
-    top: 0;
-    z-index: 999;
-    background-color: white;
-    padding-top: 4px;
-    padding-bottom: 6px;
-    border-bottom: 2px solid #f0f2f6;
-}
-.sticky-app-bar {
-    width: 100%;
-}
-</style>
-<div class="sticky-app-bar"></div>
-""", unsafe_allow_html=True)
+st.markdown("<h2 style='margin:0; padding:0; font-size:1.75rem;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
 
-with st.container():
-    st.markdown("<h2 style='margin:0; padding:0; font-size:1.75rem;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
+head_col1, head_col2, _ = st.columns([0.45, 0.08, 0.47])
+with head_col1:
+    st.markdown(f"<div style='font-size:1.25rem; font-weight:800; color:#37003c; padding-top:2px;'>🧵 {st.session_state.selected_thread}</div>", unsafe_allow_html=True)
+with head_col2:
+    if st.button("⌵", key="toggle_thread_btn", help="Switch or create thread"):
+        st.session_state.show_thread_picker = not st.session_state.show_thread_picker
+        st.rerun()
 
-    # Clean inline title + adjacent chevron toggle button
-    t_col1, t_col2, _ = st.columns([0.45, 0.08, 0.47])
-    with t_col1:
-        st.markdown(f"<div style='font-size:1.25rem; font-weight:800; color:#37003c; padding-top:2px;'>🧵 {st.session_state.selected_thread}</div>", unsafe_allow_html=True)
-    with t_col2:
-        if st.button("⌵", key="toggle_thread_btn", help="Switch or create thread"):
-            st.session_state.show_thread_picker = not st.session_state.show_thread_picker
+st.markdown(f"<div style='font-size:0.85rem; color:#666; margin-top:-4px; margin-bottom:6px;'>Targeting: <b>Gameweek {target_gw}</b> | Active Mini-League: <b>Crazy Football Fans</b></div>", unsafe_allow_html=True)
+
+if st.session_state.show_thread_picker:
+    p_col1, p_col2, p_col3 = st.columns([5, 4, 1])
+    with p_col1:
+        picked = st.selectbox(
+            "Select thread:",
+            thread_names,
+            index=thread_names.index(st.session_state.selected_thread),
+            label_visibility="collapsed"
+        )
+        if picked != st.session_state.selected_thread:
+            st.session_state.selected_thread = picked
+            st.session_state.show_thread_picker = False
             st.rerun()
-
-    st.markdown(f"<div style='font-size:0.85rem; color:#666; margin-top:-4px; margin-bottom:6px;'>Targeting: <b>Gameweek {target_gw}</b> | Active Mini-League: <b>Crazy Football Fans</b></div>", unsafe_allow_html=True)
-
-    if st.session_state.show_thread_picker:
-        p_col1, p_col2, p_col3 = st.columns([5, 4, 1])
-        with p_col1:
-            picked = st.selectbox(
-                "Select thread:",
-                thread_names,
-                index=thread_names.index(st.session_state.selected_thread),
-                label_visibility="collapsed"
-            )
-            if picked != st.session_state.selected_thread:
-                st.session_state.selected_thread = picked
+    with p_col2:
+        new_title = st.text_input("New Thread Name", placeholder="e.g. GW5 Transfers", label_visibility="collapsed")
+    with p_col3:
+        if st.button("➕", help="Add thread", use_container_width=True) and new_title.strip():
+            c_name = new_title.strip()
+            if c_name not in saved_threads:
+                saved_threads[c_name] = []
+                save_all_threads(saved_threads)
+                st.session_state.selected_thread = c_name
                 st.session_state.show_thread_picker = False
                 st.rerun()
-        with p_col2:
-            new_title = st.text_input("New Thread Name", placeholder="e.g. GW5 Transfers", label_visibility="collapsed")
-        with p_col3:
-            if st.button("➕", help="Add thread", use_container_width=True) and new_title.strip():
-                c_name = new_title.strip()
-                if c_name not in saved_threads:
-                    saved_threads[c_name] = []
-                    save_all_threads(saved_threads)
-                    st.session_state.selected_thread = c_name
-                    st.session_state.show_thread_picker = False
-                    st.rerun()
 
 # -------------------------------------------------------------
 # 7. CHAT DISPLAY & DYNAMIC INTENT-BASED AI STRATEGIST
@@ -659,7 +702,6 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
 
-    # Prepare Expected Points (xP) Tables for the model
     xp_squad_lines = []
     starter_total_next_gw = 0.0
     starter_total_3gw = 0.0
@@ -676,20 +718,22 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     squad_xp_table = "\n".join(xp_squad_lines)
 
-    # Dynamic system instruction without rigid boilerplate structures
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
         f"Primary League: Crazy Football Fans (ID: 987870). Target Gameweek: GW {target_gw}.\n"
-        f"Bank: £{data['bank']}m. Free Transfers: {data['free_transfers']} FT. Anti-Fan Bias: Support for {MY_FAVORITE_CLUB} must never dictate decisions.\n\n"
+        f"Bank: £{data['bank']}m. Free Transfers Available: {st.session_state.custom_ft} FT.\n"
+        f"Chips Inventory: Played={data['chips_played']}, Available={[c for c in ['wildcard','freehit','bboost','3xc'] if c not in data['chips_played']]}.\n"
+        f"Anti-Fan Bias: Support for {MY_FAVORITE_CLUB} must never dictate decisions.\n\n"
         "COMMUNICATION & INTENT DIRECTIVES:\n"
         "- DYNAMIC ADAPTATION: Answer the user's specific prompt directly. NEVER force a repetitive boilerplate template (such as always generating Weak Link Analysis or Plan A/Plan B) unless the user explicitly asks for a full transfer plan.\n"
-        "- Direct Factual / Statistical Inquiries: If the user asks about points, projected scores, or specific player comparisons (e.g. Mbeumo vs Szoboszlai), provide the exact data, comparative table, and concise verdict without unprompted transfer pitches.\n"
+        "- Direct Statistical Inquiries: If the user asks about points, projected scores, or specific player comparisons (e.g. Mbeumo vs Szoboszlai), provide the exact data, comparative table, and concise verdict without unprompted transfer pitches.\n"
         "- Rival Inquiries: If the user asks about a rival manager or team, analyze that specific rival using available league data.\n"
         "- Decisive Advice: When advice is requested, be assertive with numbers, stats (xP, xGI, FDR), and tactical reasoning. Never deflect with 'What do you want to do?'."
     )
 
     prompt_context = (
         f"### LIVE GAMEWEEK {target_gw} CONTEXT\n"
+        f"Free Transfers Bank: {st.session_state.custom_ft} FT | Bank Remaining: £{data['bank']}m\n"
         f"User Starting XI Projected Total: Next GW = {starter_total_next_gw:.1f} pts | 3-GW Total = {starter_total_3gw:.1f} pts\n\n"
         f"Current Squad Expected Points Matrix:\n"
         f"| Player | Position | Cost | GW{target_gw} xP | 3-GW xP |\n"
