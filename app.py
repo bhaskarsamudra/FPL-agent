@@ -1,5 +1,6 @@
 import os
 import json
+import time
 from datetime import datetime, timezone
 import pandas as pd
 import requests
@@ -275,12 +276,22 @@ def fetch_mini_league_full(league_id: int):
                 "Total": user_entry["total"]
             })
 
+    # Complete league list (every team from #1 to the end)
     all_managers = {}
+    full_standings_rows = []
     for m in results:
         label = f"#{m['rank']} {m['entry_name']} ({m['player_name']})"
         all_managers[label] = m["entry"]
+        full_standings_rows.append({
+            "Rank": m["rank"],
+            "Team": m["entry_name"],
+            "Manager": m["player_name"],
+            "Total_Points": m["total"],
+            "GW_Points": m["event_total"],
+            "Entry_ID": m["entry"]
+        })
 
-    return league_name, table_rows, all_managers
+    return league_name, table_rows, all_managers, full_standings_rows
 
 @st.cache_data(ttl=300)
 def fetch_team_pitch_data(team_id: int, gw: int, elements_detail: dict):
@@ -544,6 +555,11 @@ def render_chip_card_html(chip_id):
         </div>
         """
 
+# Fetch mini-league info early for both sidebar and prompt context
+selected_league_label = "Crazy Football Fans (Primary)"
+selected_league_id = LEAGUES_DICT[selected_league_label]
+league_name, league_table, all_league_managers, full_league_standings = fetch_mini_league_full(selected_league_id)
+
 with st.sidebar:
     if data["is_live_matchday"]:
         st.header(f"⚽ Live: GW {last_gw}")
@@ -552,6 +568,7 @@ with st.sidebar:
         st.header(f"🎯 Gameweek {target_gw}")
         st.caption(f"Manager: **{data['manager_name']}** | Team: **{data['team_name']}**")
 
+    # Clean Read-Only Metric Grid
     c1, c2 = st.columns(2)
     with c1:
         st.metric("Total Points", data['total_points'])
@@ -573,10 +590,11 @@ with st.sidebar:
     st.info(f"🌍 **World #1:** {data['world_leader']['name']} ({data['world_leader']['team']}) — **{data['world_leader']['points']} pts**")
 
     st.subheader("🏆 Mini-League Leaderboard")
-    selected_league_label = st.selectbox("Select Mini-League:", list(LEAGUES_DICT.keys()), index=0)
-    selected_league_id = LEAGUES_DICT[selected_league_label]
+    chosen_league_label = st.selectbox("Select Mini-League:", list(LEAGUES_DICT.keys()), index=0)
+    if chosen_league_label != selected_league_label:
+        selected_league_id = LEAGUES_DICT[chosen_league_label]
+        league_name, league_table, all_league_managers, full_league_standings = fetch_mini_league_full(selected_league_id)
 
-    league_name, league_table, all_league_managers = fetch_mini_league_full(selected_league_id)
     st.caption(f"Standings for **{league_name}**")
     st.dataframe(pd.DataFrame(league_table), hide_index=True, use_container_width=True)
 
@@ -688,7 +706,7 @@ with st.container():
                     st.rerun()
 
 # -------------------------------------------------------------
-# 7. CHAT DISPLAY & DYNAMIC INTENT-BASED AI STRATEGIST
+# 7. CHAT DISPLAY & DYNAMIC RETRY-PROTECTED AI STRATEGIST
 # -------------------------------------------------------------
 current_thread = st.session_state.selected_thread
 
@@ -725,6 +743,7 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
 
+    # Prepare Expected Points (xP) Tables
     xp_squad_lines = []
     starter_total_next_gw = 0.0
     starter_total_3gw = 0.0
@@ -741,6 +760,12 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     squad_xp_table = "\n".join(xp_squad_lines)
 
+    # Format FULL authentic league standings table so AI never hallucinates rival names
+    league_md_lines = ["| Rank | Team Name | Manager Name | Total Points |", "| :--- | :--- | :--- | :--- |"]
+    for row in full_league_standings:
+        league_md_lines.append(f"| #{row['Rank']} | {row['Team']} | {row['Manager']} | {row['Total_Points']} |")
+    full_league_table_str = "\n".join(league_md_lines)
+
     system_instruction = (
         f"You are the elite FPL Chief Strategist managing {data['manager_name']}'s squad '{data['team_name']}'.\n"
         f"Primary League: Crazy Football Fans (ID: 987870). Target Gameweek: GW {target_gw}.\n"
@@ -748,9 +773,9 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
         f"Chips Inventory: Played={data['chips_played']}, Available={[c for c in ['wildcard','freehit','bboost','3xc'] if c not in data['chips_played']]}.\n"
         f"Anti-Fan Bias: Support for {MY_FAVORITE_CLUB} must never dictate decisions.\n\n"
         "COMMUNICATION & INTENT DIRECTIVES:\n"
-        "- DYNAMIC ADAPTATION: Answer the user's specific prompt directly. NEVER force a repetitive boilerplate template (such as always generating Weak Link Analysis or Plan A/Plan B) unless the user explicitly asks for a full transfer plan.\n"
-        "- Direct Statistical Inquiries: If the user asks about points, projected scores, or specific player comparisons (e.g. Mbeumo vs Szoboszlai), provide the exact data, comparative table, and concise verdict without unprompted transfer pitches.\n"
-        "- Rival Inquiries: If the user asks about a rival manager or team, analyze that specific rival using available league data.\n"
+        "- DYNAMIC ADAPTATION: Answer the user's specific prompt directly. NEVER force a repetitive boilerplate template unless the user explicitly asks for a full transfer plan.\n"
+        "- NO HALLUCINATIONS: When listing or analyzing league teams, ONLY use the exact real teams and managers provided in the OFFICIAL MINI-LEAGUE STANDINGS feed below. Never invent fake team or manager names.\n"
+        "- If the user uploads an image/screenshot, prioritize reading and referencing the contents of that attachment.\n"
         "- Decisive Advice: When advice is requested, be assertive with numbers, stats (xP, xGI, FDR), and tactical reasoning. Never deflect with 'What do you want to do?'."
     )
 
@@ -766,7 +791,8 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
         f"- Top FWDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_forwards']]}\n"
         f"- Top MIDs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_midfielders']]}\n"
         f"- Top DEFs: {[p['name'] + ' (3GW xP: ' + str(p['xp_3gw']) + ')' for p in data['scouting_radar']['top_xp_defenders']]}\n\n"
-        f"Mini-League Top 5 Overview: {league_table[:5]}\n\n"
+        f"### OFFICIAL MINI-LEAGUE STANDINGS (ALL TEAMS):\n"
+        f"{full_league_table_str}\n\n"
         f"User Query: {prompt}"
     )
 
@@ -790,27 +816,40 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Analyzing data and formulating response..."):
-            try:
-                response = client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=contents,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system_instruction,
-                        temperature=0.2
+            # Automatic retry logic for 503 capacity spikes
+            max_retries = 3
+            response_text = None
+            for attempt in range(max_retries):
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.2
+                        )
                     )
-                )
-                model_reply = response.text
+                    response_text = response.text
+                    break
+                except Exception as e:
+                    err_msg = str(e)
+                    if ("503" in err_msg or "UNAVAILABLE" in err_msg) and attempt < max_retries - 1:
+                        time.sleep(2 * (attempt + 1))
+                        continue
+                    else:
+                        st.error(f"Strategy engine error: {err_msg}")
+                        break
+
+            if response_text:
                 st.caption(f"🗓️ {now_str} | {gw_badge}")
-                st.markdown(model_reply)
+                st.markdown(response_text)
 
                 assistant_entry = {
                     "role": "assistant",
-                    "content": model_reply,
+                    "content": response_text,
                     "timestamp": now_str,
                     "gw_tag": gw_badge
                 }
                 clean_active_messages.append(assistant_entry)
                 saved_threads[current_thread] = clean_active_messages
                 save_all_threads(saved_threads)
-            except Exception as e:
-                st.error(f"Strategy engine error: {str(e)}")
