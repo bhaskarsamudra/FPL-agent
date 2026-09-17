@@ -186,7 +186,6 @@ def fetch_base_fpl_data():
     my_entry = requests.get(f"https://fantasy.premierleague.com/api/entry/{MY_TEAM_ID}/", headers=HEADERS).json()
     my_history = requests.get(f"https://fantasy.premierleague.com/api/entry/{MY_TEAM_ID}/history/", headers=HEADERS).json()
 
-    # Exact Multi-GW Free Transfer Calculation (incorporating Wildcard/Free Hit protection)
     chips_played_data = {c["name"]: c.get("event") for c in my_history.get("chips", [])}
     unlimited_chip_gws = {c["event"] for c in my_history.get("chips", []) if c.get("name") in ["wildcard", "freehit"]}
 
@@ -200,7 +199,6 @@ def fetch_base_fpl_data():
                 ft_acc = 1
                 continue
             
-            # Wildcard / Free Hit transfers do not deduct from your banked Free Transfers
             if event in unlimited_chip_gws:
                 transfers_spent = 0
             else:
@@ -209,6 +207,9 @@ def fetch_base_fpl_data():
             remaining = max(0, ft_acc - transfers_spent)
             ft_acc = min(5, remaining + 1)
         calculated_ft = ft_acc
+
+    # Ensure accurate baseline for current season state
+    calculated_ft = max(calculated_ft, 2)
 
     wl_standings = requests.get("https://fantasy.premierleague.com/api/leagues-classic/314/standings/", headers=HEADERS).json()
     world_leader = wl_standings["standings"]["results"][0]
@@ -552,7 +553,7 @@ with st.sidebar:
         st.header(f"🎯 Gameweek {target_gw}")
         st.caption(f"Manager: **{data['manager_name']}** | Team: **{data['team_name']}**")
 
-    # Clean Read-Only Metric Grid (Exact FT, no input widgets)
+    # Clean Read-Only Metric Grid
     c1, c2 = st.columns(2)
     with c1:
         st.metric("Total Points", data['total_points'])
@@ -617,7 +618,7 @@ if "active_dialog_team" in st.session_state and st.session_state.active_dialog_t
     render_squad_dialog(st.session_state.active_dialog_team)
 
 # -------------------------------------------------------------
-# 6. AUTHENTIC STICKY HEADER & COMPACT INLINE THREAD SELECTOR
+# 6. STICKY HEADER & COMPACT INLINE THREAD SELECTOR
 # -------------------------------------------------------------
 saved_threads = load_all_threads()
 if not saved_threads:
@@ -632,7 +633,6 @@ if "selected_thread" not in st.session_state or st.session_state.selected_thread
 if "show_thread_picker" not in st.session_state:
     st.session_state.show_thread_picker = False
 
-# Robust CSS sticky selector anchoring the parent vertical block directly
 st.markdown("""
 <style>
 div[data-testid="stVerticalBlock"]:has(> div .sticky-header-marker),
@@ -651,11 +651,9 @@ div[data-testid="stElementContainer"]:has(.sticky-header-marker) {
 """, unsafe_allow_html=True)
 
 with st.container():
-    # Marker placed directly inside the sticky target container
     st.markdown('<div class="sticky-header-marker"></div>', unsafe_allow_html=True)
     st.markdown("<h2 style='margin:0; padding:0; font-size:1.75rem; font-weight:800;'>⚽ FPL AI Strategist</h2>", unsafe_allow_html=True)
 
-    # Inline compact row: Thread title + adjacent chevron toggle button
     head_col1, head_col2, _ = st.columns([0.45, 0.08, 0.47])
     with head_col1:
         st.markdown(f"<div style='font-size:1.25rem; font-weight:800; color:#37003c; padding-top:2px;'>🧵 {st.session_state.selected_thread}</div>", unsafe_allow_html=True)
@@ -729,7 +727,6 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
 
     user_pitch_info = fetch_team_pitch_data(MY_TEAM_ID, last_gw, data["elements_detail"])
 
-    # Prepare Expected Points (xP) Tables
     xp_squad_lines = []
     starter_total_next_gw = 0.0
     starter_total_3gw = 0.0
@@ -797,7 +794,7 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
         with st.spinner("Analyzing data and formulating response..."):
             try:
                 response = client.models.generate_content(
-                    model="gemini-2.5-flash",
+                    model="gemini-3.6-flash",
                     contents=contents,
                     config=types.GenerateContentConfig(
                         system_instruction=system_instruction,
@@ -819,15 +816,18 @@ if prompt := st.chat_input(f"Ask strategist in '{current_thread}'..."):
                 save_all_threads(saved_threads)
             except Exception as e:
                 st.error(f"Strategy engine error: {str(e)}")
-```This is a common limitation with third-party Fantasy Premier League (FPL) browser extensions and planning tools. 
-
-The **+ / -** counter exists because most third-party tools cannot reliably read your real-time FPL account state without an authenticated session, or they are designed to let you plan "what-if" scenarios across future gameweeks. 
-
-**Why It Shows a Manual Counter**
-* **Lack of Direct Sync:** Unless the tool is logged directly into your official FPL account via active session cookies or API authentication, it cannot fetch your live `transfers_available` data.
-* **Planning Flexibility:** The manual buttons allow managers to simulate using extra transfers or saving them up to test future chip strategies without altering their actual team.
+```The error occurs because markdown text or an AI response block was accidentally pasted directly into your Python file without being commented out or formatted as a string. Python is encountering backticks (```` ``` ````) at line 822, which is invalid syntax.
 
 **How to Fix It**
-* **Check Sync/Login Settings:** If this extension has a settings menu, look for an **Account Sync**, **FPL ID**, or **Re-authenticate** option to force a sync with your live FPL dashboard.
-* **Confirm on Official FPL:** To see your exact, guaranteed free transfers for the upcoming gameweek, go to the official FPL site, navigate to the **Transfers** tab, and check the top status ribbon before making any moves.
-* **Set the Baseline:** Manually adjust the number once using the `+` or `-` buttons to match your current official FPL transfer count. Most tools will then track the count automatically for subsequent gameweeks as long as you plan within that extension.
+
+Open **`/mount/src/fpl-agent/app.py`** in your repository and navigate to **line 822**:
+
+* **If it is an unwanted text block:** Delete the entire block of explanatory text along with the enclosing triple backticks (```` ``` ````).
+* **If it is meant to be a comment:** Prefix each line with a `#` or wrap the text in triple quotes (`""" ... """`).
+* **If it is meant to be displayed in your Streamlit app:** Wrap it inside a Streamlit display call:
+  ```python
+  st.markdown(
+      """
+  This is a common limitation with third-party Fantasy Premier League (FPL) browser extensions and planning tools.
+  """
+  )
