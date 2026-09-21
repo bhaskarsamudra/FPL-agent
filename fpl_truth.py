@@ -127,3 +127,47 @@ def get_manager_picks(team_id, gameweek):
 
     # Return the complete response without changing it.
     return data
+# ============================================================
+# STEP 1F:
+# Get a manager's season history.
+# ============================================================
+#
+# This function retrieves the manager's Gameweek-by-Gameweek
+# history for the current FPL season.
+#
+# IMPORTANT:
+# We pass the team_id into the function.
+# We do NOT hardcode a manager's ID here.
+#
+# This allows the same function to work for:
+# - our own team
+# - mini-league rivals
+# - future users
+def get_manager_history(team_id):
+
+    # Build the URL for the manager's season history.
+    #
+    # Example:
+    # team_id = 3325156
+    #
+    # The resulting URL points to that manager's
+    # complete season history.
+    url = (
+        f"https://fantasy.premierleague.com/api/"
+        f"entry/{team_id}/history/"
+    )
+
+    # Ask the FPL API for the manager's history.
+    response = requests.get(
+        url,
+        timeout=10
+    )
+
+    # Make sure the API request was successful.
+    response.raise_for_status()
+
+    # Convert the JSON response into normal Python data.
+    data = response.json()
+
+    # Return the complete response without changing it.
+    return data
