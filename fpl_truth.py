@@ -195,3 +195,15 @@ def get_manager_details(team_id):
 
     # Retrieve and return the FPL data.
     return _get_api_data(endpoint)
+
+
+def get_fixtures():
+    """
+    Retrieve the official FPL fixture data.
+
+    Returns:
+        A list containing fixture information for the season.
+    """
+
+    # Ask the official FPL API for all fixture records.
+    return _get_api_data("fixtures/")
