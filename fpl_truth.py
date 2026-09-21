@@ -82,3 +82,48 @@ def get_current_gameweek():
     # If no Gameweek is marked as current, something is wrong
     # with the data we received.
     raise ValueError("Could not find the current FPL Gameweek.")
+# ============================================================
+# STEP 1E:
+# Get a manager's selected team for a specific Gameweek.
+# ============================================================
+#
+# This function retrieves the 15 players selected by a manager
+# for a particular Gameweek.
+#
+# IMPORTANT:
+# We pass the team_id and gameweek into the function.
+# We do NOT hardcode any manager's ID here.
+#
+# This makes the Truth Layer reusable for:
+# - our own team
+# - mini-league rivals
+# - future users of the application
+def get_manager_picks(team_id, gameweek):
+
+    # Build the URL for the manager's Gameweek picks.
+    #
+    # Example:
+    # team_id = 3325156
+    # gameweek = 5
+    #
+    # The resulting URL will point to that manager's
+    # Gameweek 5 team.
+    url = (
+        f"https://fantasy.premierleague.com/api/"
+        f"entry/{team_id}/event/{gameweek}/picks/"
+    )
+
+    # Ask the FPL API for the manager's Gameweek data.
+    response = requests.get(
+        url,
+        timeout=10
+    )
+
+    # Make sure the API request was successful.
+    response.raise_for_status()
+
+    # Convert the JSON response into normal Python data.
+    data = response.json()
+
+    # Return the complete response without changing it.
+    return data
