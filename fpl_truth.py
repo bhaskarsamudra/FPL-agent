@@ -1,8 +1,8 @@
 # ============================================================
-# FPL TRUTH LAYER - STEP 1B
+# FPL TRUTH LAYER - STEP 1D
 # ============================================================
 # PURPOSE:
-# This file will become the single place where our application
+# This file is the single place where our application
 # gets verified information from the official FPL API.
 #
 # IMPORTANT:
@@ -11,7 +11,7 @@
 #
 # The Truth Layer's job is simply:
 #
-#       FPL API → verified/raw FPL data → our application
+# FPL API → verified/raw FPL data → our application
 #
 # Later, other modules such as the player model, rival engine
 # and strategy engine will use this information.
@@ -21,7 +21,6 @@
 # STEP 1: Import the "requests" library.
 #
 # requests allows Python to communicate with websites and APIs.
-# We will use it to send a request to the FPL API.
 import requests
 
 
@@ -35,17 +34,11 @@ FPL_BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 
 # STEP 3: Create a function that retrieves the FPL bootstrap data.
 #
-# A function is a reusable block of code.
-#
 # Instead of writing the API request every time we need this
-# information, we can simply call:
-#
-#     get_bootstrap_data()
-#
-# from another part of our application.
+# information, we can simply call get_bootstrap_data().
 def get_bootstrap_data():
 
-    # STEP 4: Ask the FPL API for the bootstrap data.
+    # Ask the FPL API for the bootstrap data.
     #
     # timeout=10 means Python will stop waiting if the FPL
     # server does not respond within 10 seconds.
@@ -54,27 +47,38 @@ def get_bootstrap_data():
         timeout=10
     )
 
-
-    # STEP 5: Check whether the FPL API request was successful.
+    # Check whether the FPL API request was successful.
     #
-    # HTTP status code 200 means the server successfully
-    # returned the requested information.
-    #
-    # If something went wrong, raise_for_status() will raise
-    # an error instead of silently giving us bad data.
+    # If something went wrong, this will raise an error
+    # instead of allowing bad data to continue.
     response.raise_for_status()
 
-
-    # STEP 6: Convert the API's JSON response into Python data.
-    #
-    # APIs normally send information in JSON format.
-    # response.json() converts that JSON into Python dictionaries,
-    # lists, numbers and text that our program can work with.
+    # Convert the API's JSON response into Python data.
     data = response.json()
 
-
-    # STEP 7: Return the data to the code that called this function.
-    #
-    # We don't analyse or modify the data here.
-    # We simply return what the FPL API gave us.
+    # Return the data to the code that called this function.
     return data
+
+
+# STEP 4: Create a function that finds the current Gameweek.
+#
+# This function uses the official FPL API to determine
+# which Gameweek is currently active.
+def get_current_gameweek():
+
+    # Get the latest verified data from the FPL API.
+    data = get_bootstrap_data()
+
+    # Look through every Gameweek in the "events" list.
+    for event in data["events"]:
+
+        # The FPL API marks the current Gameweek with
+        # "is_current": True.
+        if event["is_current"]:
+
+            # Return the Gameweek number.
+            return event["id"]
+
+    # If no Gameweek is marked as current, something is wrong
+    # with the data we received.
+    raise ValueError("Could not find the current FPL Gameweek.")
