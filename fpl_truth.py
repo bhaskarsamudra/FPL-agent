@@ -207,3 +207,27 @@ def get_fixtures():
 
     # Ask the official FPL API for all fixture records.
     return _get_api_data("fixtures/")
+
+
+def get_player_summary(player_id):
+    """
+    Retrieve the official FPL player summary.
+
+    The player summary contains:
+    - Current-season gameweek history
+    - Upcoming fixtures
+    - Previous-season history
+
+    Parameters:
+        player_id:
+            The official FPL player ID.
+
+    Returns:
+        A dictionary containing the player's FPL summary data.
+    """
+
+    # Build the official FPL API endpoint for this player.
+    endpoint = f"element-summary/{player_id}/"
+
+    # Retrieve and return the player's official FPL data.
+    return _get_api_data(endpoint)
