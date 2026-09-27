@@ -14,6 +14,11 @@ These tests focus on:
     - chronological state progression
     - correct recent-form progression
     - summary output
+    - historical prior attachment
+    - historical prior season boundaries
+    - historical prior recency weights
+    - explicit missing historical prior handling
+    - historical prior coverage in summary output
 """
 
 from datetime import datetime
@@ -552,6 +557,281 @@ def test_recent_form_uses_only_prior_matches() -> None:
         assert home_state["recent_5_goals_against"] == 0
 
 
+
+# ============================================================
+# HISTORICAL PRIOR ATTACHMENT TEST
+# ============================================================
+
+def test_historical_prior_is_attached_to_validation_records() -> None:
+    """
+    Verify that Historical Prior information is attached to the
+    walk-forward validation records.
+
+    The artificial dataset contains prior-season information for
+    all teams used in every test season, so every validation
+    record should have both priors available.
+    """
+
+    matches = create_test_matches()
+
+    records = build_walk_forward_dataset(
+        matches
+    )
+
+    assert len(records) == 10
+
+    for record in records:
+
+        home_prior = record[
+            "home_team_historical_prior"
+        ]
+
+        away_prior = record[
+            "away_team_historical_prior"
+        ]
+
+        assert home_prior is not None
+
+        assert away_prior is not None
+
+        assert home_prior[
+            "historical_prior_available"
+        ] is True
+
+        assert away_prior[
+            "historical_prior_available"
+        ] is True
+
+        assert home_prior[
+            "target_season"
+        ] == record["test_season"]
+
+        assert away_prior[
+            "target_season"
+        ] == record["test_season"]
+
+
+# ============================================================
+# HISTORICAL PRIOR SEASON BOUNDARY TEST
+# ============================================================
+
+def test_historical_prior_uses_only_completed_prior_seasons() -> None:
+    """
+    Verify that the Historical Prior for a target season contains
+    only seasons completed before that target season.
+
+    For 2021/22:
+        only 2020/21 is available.
+
+    For 2025/26:
+        the maximum three prior seasons are:
+            2024/25
+            2023/24
+            2022/23
+
+    The target season itself must never appear in seasons_used.
+    """
+
+    matches = create_test_matches()
+
+    records = build_walk_forward_dataset(
+        matches
+    )
+
+    first_fold_record = next(
+        record
+        for record in records
+        if record["test_season"] == "2021/22"
+    )
+
+    first_fold_prior = first_fold_record[
+        "home_team_historical_prior"
+    ]
+
+    assert first_fold_prior is not None
+
+    assert first_fold_prior[
+        "seasons_used"
+    ] == (
+        "2020/21",
+    )
+
+    assert "2021/22" not in first_fold_prior[
+        "seasons_used"
+    ]
+
+    last_fold_record = next(
+        record
+        for record in records
+        if record["test_season"] == "2025/26"
+    )
+
+    last_fold_prior = last_fold_record[
+        "home_team_historical_prior"
+    ]
+
+    assert last_fold_prior is not None
+
+    assert last_fold_prior[
+        "seasons_used"
+    ] == (
+        "2024/25",
+        "2023/24",
+        "2022/23",
+    )
+
+    assert "2025/26" not in last_fold_prior[
+        "seasons_used"
+    ]
+
+    assert last_fold_prior[
+        "season_count"
+    ] == 3
+
+
+# ============================================================
+# HISTORICAL PRIOR RECENCY WEIGHT TEST
+# ============================================================
+
+def test_historical_prior_has_expected_recency_weights() -> None:
+    """
+    Verify the locked V1 recency-weight methodology.
+
+    When three completed prior seasons are available, the
+    expected weights are:
+
+        previous season       = 0.60
+        two seasons prior     = 0.30
+        three seasons prior   = 0.10
+    """
+
+    matches = create_test_matches()
+
+    records = build_walk_forward_dataset(
+        matches
+    )
+
+    record = next(
+        record
+        for record in records
+        if record["test_season"] == "2025/26"
+    )
+
+    prior = record[
+        "home_team_historical_prior"
+    ]
+
+    assert prior is not None
+
+    assert prior[
+        "recency_weights"
+    ] == (
+        0.60,
+        0.30,
+        0.10,
+    )
+
+
+# ============================================================
+# MISSING HISTORICAL PRIOR TEST
+# ============================================================
+
+def test_missing_historical_prior_is_explicit() -> None:
+    """
+    Verify that a team with no completed Premier League prior
+    season is represented as unavailable rather than receiving a
+    fabricated historical prior.
+
+    Newcastle is introduced only in the 2025/26 test season in
+    this artificial dataset.
+    """
+
+    matches = create_test_matches()
+
+    # Replace Liverpool in the 2025/26 LATE fixture with a team
+    # that has no appearance in any completed prior season.
+    mask = (
+        (matches["season"] == "2025/26")
+        & (matches["match_id"].str.endswith("_LATE"))
+    )
+
+    matches.loc[
+        mask,
+        "away_team"
+    ] = "Newcastle"
+
+    records = build_walk_forward_dataset(
+        matches
+    )
+
+    record = next(
+        record
+        for record in records
+        if (
+            record["test_season"] == "2025/26"
+            and record["match_id"].endswith("_LATE")
+        )
+    )
+
+    away_prior = record[
+        "away_team_historical_prior"
+    ]
+
+    assert away_prior is not None
+
+    assert away_prior[
+        "team"
+    ] == "Newcastle"
+
+    assert away_prior[
+        "historical_prior_available"
+    ] is False
+
+    assert away_prior[
+        "season_count"
+    ] == 0
+
+    assert away_prior[
+        "sample_size"
+    ] == 0
+
+    assert away_prior[
+        "seasons_used"
+    ] == ()
+
+
+# ============================================================
+# HISTORICAL PRIOR SUMMARY COVERAGE TEST
+# ============================================================
+
+def test_summary_reports_historical_prior_coverage() -> None:
+    """
+    Verify that the dataset summary reports Historical Prior
+    coverage separately from current-season team-state coverage.
+
+    The artificial dataset has prior-season information for every
+    team used by the five test folds, so all 10 records should
+    have both home and away Historical Priors.
+    """
+
+    matches = create_test_matches()
+
+    records = build_walk_forward_dataset(
+        matches
+    )
+
+    summary = summarize_walk_forward_dataset(
+        records
+    )
+
+    assert summary[
+        "records_with_home_historical_prior"
+    ] == 10
+
+    assert summary[
+        "records_with_away_historical_prior"
+    ] == 10
+
 # ============================================================
 # SUMMARY TEST
 # ============================================================
@@ -625,6 +905,16 @@ if __name__ == "__main__":
     test_previous_match_is_available_to_later_fixture()
 
     test_recent_form_uses_only_prior_matches()
+
+    test_historical_prior_is_attached_to_validation_records()
+
+    test_historical_prior_uses_only_completed_prior_seasons()
+
+    test_historical_prior_has_expected_recency_weights()
+
+    test_missing_historical_prior_is_explicit()
+
+    test_summary_reports_historical_prior_coverage()
 
     test_summary()
 

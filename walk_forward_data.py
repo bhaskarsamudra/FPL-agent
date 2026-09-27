@@ -22,6 +22,8 @@ For every historical test fixture, this module records:
     - actual goals
     - home team state available BEFORE kickoff
     - away team state available BEFORE kickoff
+    - separate Historical Prior for the home team
+    - separate Historical Prior for the away team
 
 Important
 ---------
@@ -81,6 +83,11 @@ from historical_team_data import (
 from walk_forward_validation import (
     WalkForwardFold,
     get_walk_forward_folds,
+)
+
+from historical_prior import (
+    HistoricalPrior,
+    build_historical_priors,
 )
 
 
@@ -385,6 +392,8 @@ def _build_fixture_validation_record(
     match: pd.Series,
     home_state: dict[str, Any] | None,
     away_state: dict[str, Any] | None,
+    home_historical_prior: HistoricalPrior | None,
+    away_historical_prior: HistoricalPrior | None,
 ) -> dict[str, Any]:
     """
     Build one auditable validation record.
@@ -458,6 +467,28 @@ def _build_fixture_validation_record(
         "home_team_state": home_state,
 
         "away_team_state": away_state,
+
+        # ----------------------------------------------------
+        # Historical Prior Layer
+        # ----------------------------------------------------
+
+        # Historical Prior is deliberately kept separate from
+        # current-season point-in-time state.
+        #
+        # None is meaningful when no validated historical prior
+        # exists. We do not fabricate a prior for such teams.
+
+        "home_team_historical_prior": (
+            home_historical_prior.to_dict()
+            if home_historical_prior is not None
+            else None
+        ),
+
+        "away_team_historical_prior": (
+            away_historical_prior.to_dict()
+            if away_historical_prior is not None
+            else None
+        ),
     }
 
 
@@ -576,6 +607,38 @@ def build_walk_forward_dataset(
         )
 
         # ----------------------------------------------------
+        # Historical Prior Layer
+        #
+        # Build the prior once for the complete team universe
+        # appearing in this test season.
+        #
+        # The Historical Prior Layer uses only completed seasons
+        # before the target/test season. It is therefore separate
+        # from the current-season point-in-time state below.
+        #
+        # Building it once per fold avoids recalculating the same
+        # historical evidence for every fixture.
+        # ----------------------------------------------------
+
+        test_season_teams = sorted(
+            set(
+                test_matches["home_team"]
+                .astype(str)
+            )
+            |
+            set(
+                test_matches["away_team"]
+                .astype(str)
+            )
+        )
+
+        historical_priors = build_historical_priors(
+            historical_matches=data,
+            target_season=fold.test_season,
+            teams=test_season_teams,
+        )
+
+        # ----------------------------------------------------
         # Running state for this test season.
         #
         # IMPORTANT:
@@ -654,8 +717,32 @@ def build_walk_forward_dataset(
             # ------------------------------------------------
             # STEP 4
             #
-            # Build the validation record using the PRE-MATCH
-            # state and the actual target result.
+            # Retrieve the Historical Prior for each team.
+            #
+            # Historical Prior is season-level evidence and does
+            # not depend on the target fixture kickoff.
+            # It is already restricted to completed seasons
+            # before the test season by build_historical_priors().
+            # ------------------------------------------------
+
+            home_historical_prior = historical_priors.get(
+                str(match["home_team"])
+            )
+
+            away_historical_prior = historical_priors.get(
+                str(match["away_team"])
+            )
+
+            # ------------------------------------------------
+            # STEP 5
+            #
+            # Build the validation record using:
+            #
+            #   - PRE-MATCH current-season state
+            #   - separate Historical Prior
+            #   - actual target result
+            #
+            # The actual fixture has still NOT been applied.
             # ------------------------------------------------
 
             validation_record = (
@@ -664,6 +751,12 @@ def build_walk_forward_dataset(
                     match=match,
                     home_state=home_state,
                     away_state=away_state,
+                    home_historical_prior=(
+                        home_historical_prior
+                    ),
+                    away_historical_prior=(
+                        away_historical_prior
+                    ),
                 )
             )
 
@@ -672,7 +765,7 @@ def build_walk_forward_dataset(
             )
 
             # ------------------------------------------------
-            # STEP 5
+            # STEP 6
             #
             # ONLY NOW apply the actual match.
             #
@@ -725,6 +818,8 @@ def summarize_walk_forward_dataset(
             "records_by_fold": {},
             "records_with_home_state": 0,
             "records_with_away_state": 0,
+            "records_with_home_historical_prior": 0,
+            "records_with_away_historical_prior": 0,
         }
 
     records_by_fold: dict[
@@ -736,6 +831,9 @@ def summarize_walk_forward_dataset(
 
     records_with_home_state = 0
     records_with_away_state = 0
+
+    records_with_home_historical_prior = 0
+    records_with_away_historical_prior = 0
 
     for record in validation_records:
 
@@ -761,6 +859,16 @@ def summarize_walk_forward_dataset(
         if record["away_team_state"] is not None:
             records_with_away_state += 1
 
+        if record.get(
+            "home_team_historical_prior"
+        ) is not None:
+            records_with_home_historical_prior += 1
+
+        if record.get(
+            "away_team_historical_prior"
+        ) is not None:
+            records_with_away_historical_prior += 1
+
     return {
         "records": len(
             validation_records
@@ -782,6 +890,14 @@ def summarize_walk_forward_dataset(
 
         "records_with_away_state": (
             records_with_away_state
+        ),
+
+        "records_with_home_historical_prior": (
+            records_with_home_historical_prior
+        ),
+
+        "records_with_away_historical_prior": (
+            records_with_away_historical_prior
         ),
     }
 
