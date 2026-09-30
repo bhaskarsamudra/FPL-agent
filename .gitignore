@@ -1,0 +1,19 @@
+# Local SQLite databases
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Local virtual environment
+.venv/
+venv/
+
+# Local environment/secrets
+.env
+.env.*
+
+# macOS
+.DS_Store
