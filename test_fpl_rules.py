@@ -49,3 +49,12 @@ def test_invalid_inputs_raise():
         engine.goal_points("BAD")
     with pytest.raises(ValueError):
         engine.transfer_hit(-1, 1)
+
+
+def test_fallback_has_two_distinct_wildcard_instances():
+    instances = FALLBACK_2026_27_RULES.chip_instances
+    wildcards = [item for item in instances if item.chip_type == "wildcard"]
+
+    assert [item.instance_id for item in wildcards] == ["wildcard_1", "wildcard_2"]
+    assert wildcards[0].available_until == 19
+    assert wildcards[1].available_from == 20

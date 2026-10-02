@@ -14,6 +14,27 @@ rules before live recommendations are enabled.
 from dataclasses import dataclass
 from typing import Literal
 
+
+@dataclass(frozen=True)
+class ChipInstanceRule:
+    """Season-specific availability window for one chip instance."""
+
+    instance_id: str
+    chip_type: str
+    available_from: int
+    available_until: int
+
+    def __post_init__(self) -> None:
+        if not self.instance_id.strip():
+            raise ValueError("instance_id is required")
+        if self.available_from < 1:
+            raise ValueError("available_from must be positive")
+        if self.available_until < self.available_from:
+            raise ValueError("available_until must be >= available_from")
+
+    def is_available(self, gameweek: int) -> bool:
+        return self.available_from <= int(gameweek) <= self.available_until
+
 Position = Literal["GK", "DEF", "MID", "FWD"]
 
 
@@ -63,6 +84,7 @@ class FPLRules:
     midfielder_dc_threshold: int
     forward_dc_threshold: int
     defensive_contribution_points: int
+    chip_instances: tuple[ChipInstanceRule, ...] = ()
 
 
 FALLBACK_2026_27_RULES = FPLRules(
@@ -81,6 +103,13 @@ FALLBACK_2026_27_RULES = FPLRules(
     max_chips_per_gameweek=1,
     first_half_last_gameweek=19,
     second_half_first_gameweek=20,
+    chip_instances=(
+        ChipInstanceRule("wildcard_1", "wildcard", 1, 19),
+        ChipInstanceRule("wildcard_2", "wildcard", 20, 38),
+        ChipInstanceRule("freehit_1", "freehit", 1, 38),
+        ChipInstanceRule("bboost_1", "bboost", 1, 38),
+        ChipInstanceRule("3xc_1", "3xc", 1, 38),
+    ),
     captain_multiplier=2,
     triple_captain_multiplier=3,
     appearance_0_to_59=1,

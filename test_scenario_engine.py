@@ -57,3 +57,20 @@ def test_scenario_exposes_missing_projection():
     )
     assert result.data_complete is False
     assert any("player 99" in warning for warning in result.warnings)
+
+
+def test_scenario_applies_captain_multiplier():
+    scenario = Scenario(
+        scenario_id="captain",
+        scenario_type="baseline",
+        description="Captain scenario",
+        player_ids=(1, 2),
+        captain_by_gameweek=((11, 1),),
+        captain_multiplier_by_gameweek=((11, 2.0),),
+    )
+    result = evaluate_scenario(
+        scenario=scenario,
+        projections={1: _projection(5, 0), 2: _projection(5, 0)},
+        gameweeks=[11],
+    )
+    assert result.projected_points == 15
