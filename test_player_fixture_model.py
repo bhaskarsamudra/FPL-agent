@@ -19,6 +19,7 @@ def make_player(player_id, team_id, xg, xa, bonus=10, starts=5):
         "expected_goals": xg,
         "expected_assists": xa,
         "bonus": bonus,
+        "defensive_contribution": 12,
         "chance_of_playing_this_round": 100,
         "status": "a",
     }
@@ -231,7 +232,7 @@ def test_projection_keeps_model_version():
         bootstrap_data={"element_types": []},
     )
 
-    assert result.model_version == "player_fixture_xp_v1"
+    assert result.model_version == "player_fixture_xp_v2"
 
 
 def test_projection_exposes_batch9_start_probability():

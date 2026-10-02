@@ -26,7 +26,7 @@ from expected_points import ExpectedPoints, expected_points_for_fixture
 from player_minutes_model import project_player_minutes
 
 
-MODEL_VERSION = "player_fixture_xp_v1"
+MODEL_VERSION = "player_fixture_xp_v2"
 
 
 @dataclass(frozen=True)
@@ -184,11 +184,11 @@ def estimate_expected_bonus(
         return 0.0, "Expected bonus unavailable: player has no historical starts."
 
     bonus_per_start = bonus / starts
-    expected_bonus = bonus_per_start * min(1.0, max(0.0, start_probability))
 
-    # Keep a single fixture's baseline bonus contribution within a sensible
-    # FPL range. The cap is a guardrail, not a calibrated probability model.
-    return min(3.0, expected_bonus), None
+    # Batch 11 expected-points V2 applies the probability of reaching 60
+    # minutes. Keep this value as the bonus rate conditional on a start so
+    # that the probability is not counted twice.
+    return min(3.0, bonus_per_start), None
 
 
 def build_player_fixture_projection(
@@ -307,6 +307,10 @@ def build_player_fixture_projection(
 
     # The assist-opportunity fallback above is deliberate and fully
     # specified, so it does not make the result incomplete by itself.
+    expected_goals_conceded = opponent_xg if int(player.get("position_id", player.get("element_type", 0))) in {1, 2} else None
+    expected_saves = player.get("expected_saves") if int(player.get("position_id", player.get("element_type", 0))) == 1 else None
+    expected_defensive_contribution = player.get("defensive_contribution")
+
     result: ExpectedPoints = expected_points_for_fixture(
         player=player,
         gameweek=gameweek,
@@ -317,6 +321,9 @@ def build_player_fixture_projection(
         bootstrap_data=bootstrap_data,
         start_probability=start_probability,
         expected_minutes=minutes_projection.expected_minutes,
+        expected_saves=expected_saves,
+        expected_defensive_contribution=expected_defensive_contribution,
+        expected_goals_conceded=expected_goals_conceded,
     )
 
     if not result.data_complete:
