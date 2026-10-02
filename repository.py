@@ -72,3 +72,89 @@ class Repository(ABC):
         Exceptions roll back.
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def upsert_user(
+        self,
+        external_user_key: str,
+        display_name: str | None = None,
+    ) -> int:
+        """Insert or update one application user."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_manager(
+        self,
+        user_id: int,
+        fpl_manager_id: int,
+        manager_name: str | None = None,
+        team_name: str | None = None,
+    ) -> int:
+        """Insert or update one FPL manager."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_manager_gameweek_state(
+        self,
+        manager_id: int,
+        season_id: int,
+        gameweek_id: int,
+        points: int | None = None,
+        total_points: int | None = None,
+        overall_rank: int | None = None,
+        rank: int | None = None,
+        bank: float | None = None,
+        team_value: float | None = None,
+        event_transfers: int | None = None,
+        event_transfers_cost: int | None = None,
+        points_on_bench: int | None = None,
+        source_timestamp: str | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one manager Gameweek state record."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_manager_pick(
+        self,
+        manager_id: int,
+        season_id: int,
+        gameweek_id: int,
+        player_id: int,
+        position: int | None = None,
+        multiplier: int | None = None,
+        is_captain: bool = False,
+        is_vice_captain: bool = False,
+        purchase_price: float | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one manager pick."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def create_manager_transfer(
+        self,
+        manager_id: int,
+        season_id: int,
+        gameweek_id: int,
+        transfer_timestamp: str | None = None,
+        player_in_id: int | None = None,
+        player_out_id: int | None = None,
+        cost: int | None = None,
+        external_transfer_id: str | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Create one manager transfer record."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_manager_chip(
+        self,
+        manager_id: int,
+        season_id: int,
+        chip_type: str,
+        gameweek_id: int | None = None,
+        used_at: str | None = None,
+    ) -> int:
+        """Insert or update one manager chip usage record."""
+        raise NotImplementedError

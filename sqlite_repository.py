@@ -1260,3 +1260,249 @@ class SQLiteRepository(Repository):
                 fixture_id,
             ),
         )
+
+    # ------------------------------------------------------------------
+    # User / manager methods
+    # ------------------------------------------------------------------
+
+    def upsert_user(
+        self,
+        external_user_key: str,
+        display_name: str | None = None,
+    ) -> int:
+        """Insert or update one application user."""
+        timestamp = self._utc_now()
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO users (
+                    external_user_key, display_name, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(external_user_key) DO UPDATE SET
+                    display_name = excluded.display_name,
+                    updated_at = excluded.updated_at
+                """,
+                (external_user_key, display_name, timestamp, timestamp),
+            )
+            row = self.connection.execute(
+                "SELECT id FROM users WHERE external_user_key = ?",
+                (external_user_key,),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("User upsert succeeded but user was not found.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def upsert_manager(
+        self,
+        user_id: int,
+        fpl_manager_id: int,
+        manager_name: str | None = None,
+        team_name: str | None = None,
+    ) -> int:
+        """Insert or update one FPL manager."""
+        timestamp = self._utc_now()
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO managers (
+                    user_id, fpl_manager_id, manager_name, team_name,
+                    created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(fpl_manager_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    manager_name = excluded.manager_name,
+                    team_name = excluded.team_name,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    user_id, fpl_manager_id, manager_name, team_name,
+                    timestamp, timestamp,
+                ),
+            )
+            row = self.connection.execute(
+                "SELECT id FROM managers WHERE fpl_manager_id = ?",
+                (fpl_manager_id,),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError(
+                    "Manager upsert succeeded but manager was not found."
+                )
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def upsert_manager_gameweek_state(
+        self, manager_id: int, season_id: int, gameweek_id: int,
+        points: int | None = None, total_points: int | None = None,
+        overall_rank: int | None = None, rank: int | None = None,
+        bank: float | None = None, team_value: float | None = None,
+        event_transfers: int | None = None,
+        event_transfers_cost: int | None = None,
+        points_on_bench: int | None = None,
+        source_timestamp: str | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one manager Gameweek state."""
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO manager_gameweek_state (
+                    manager_id, season_id, gameweek_id, points, total_points,
+                    overall_rank, rank, bank, team_value, event_transfers,
+                    event_transfers_cost, points_on_bench, source_timestamp,
+                    ingestion_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(manager_id, season_id, gameweek_id) DO UPDATE SET
+                    points = excluded.points,
+                    total_points = excluded.total_points,
+                    overall_rank = excluded.overall_rank,
+                    rank = excluded.rank,
+                    bank = excluded.bank,
+                    team_value = excluded.team_value,
+                    event_transfers = excluded.event_transfers,
+                    event_transfers_cost = excluded.event_transfers_cost,
+                    points_on_bench = excluded.points_on_bench,
+                    source_timestamp = excluded.source_timestamp,
+                    ingestion_run_id = excluded.ingestion_run_id
+                """,
+                (manager_id, season_id, gameweek_id, points, total_points,
+                 overall_rank, rank, bank, team_value, event_transfers,
+                 event_transfers_cost, points_on_bench, source_timestamp,
+                 ingestion_run_id),
+            )
+            row = self.connection.execute(
+                """SELECT id FROM manager_gameweek_state
+                   WHERE manager_id = ? AND season_id = ? AND gameweek_id = ?""",
+                (manager_id, season_id, gameweek_id),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("Manager Gameweek state was not found after upsert.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def upsert_manager_pick(
+        self, manager_id: int, season_id: int, gameweek_id: int, player_id: int,
+        position: int | None = None, multiplier: int | None = None,
+        is_captain: bool = False, is_vice_captain: bool = False,
+        purchase_price: float | None = None, ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one manager pick."""
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO manager_picks (
+                    manager_id, season_id, gameweek_id, player_id, position,
+                    multiplier, is_captain, is_vice_captain, purchase_price,
+                    ingestion_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(manager_id, season_id, gameweek_id, player_id) DO UPDATE SET
+                    position = excluded.position,
+                    multiplier = excluded.multiplier,
+                    is_captain = excluded.is_captain,
+                    is_vice_captain = excluded.is_vice_captain,
+                    purchase_price = excluded.purchase_price,
+                    ingestion_run_id = excluded.ingestion_run_id
+                """,
+                (manager_id, season_id, gameweek_id, player_id, position,
+                 multiplier, int(is_captain), int(is_vice_captain),
+                 purchase_price, ingestion_run_id),
+            )
+            row = self.connection.execute(
+                """SELECT id FROM manager_picks
+                   WHERE manager_id = ? AND season_id = ? AND gameweek_id = ?
+                     AND player_id = ?""",
+                (manager_id, season_id, gameweek_id, player_id),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("Manager pick was not found after upsert.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def create_manager_transfer(
+        self, manager_id: int, season_id: int, gameweek_id: int,
+        transfer_timestamp: str | None = None, player_in_id: int | None = None,
+        player_out_id: int | None = None, cost: int | None = None,
+        external_transfer_id: str | None = None, ingestion_run_id: int | None = None,
+    ) -> int:
+        """Create one manager transfer record."""
+        try:
+            if external_transfer_id is not None:
+                existing = self.connection.execute(
+                    """
+                    SELECT id
+                    FROM manager_transfers
+                    WHERE manager_id = ?
+                      AND external_transfer_id = ?
+                    """,
+                    (manager_id, external_transfer_id),
+                ).fetchone()
+                if existing is not None:
+                    return int(existing["id"])
+
+            cursor = self.connection.execute(
+                """
+                INSERT INTO manager_transfers (
+                    manager_id, season_id, gameweek_id, transfer_timestamp,
+                    player_in_id, player_out_id, cost, external_transfer_id,
+                    ingestion_run_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (manager_id, season_id, gameweek_id, transfer_timestamp,
+                 player_in_id, player_out_id, cost, external_transfer_id,
+                 ingestion_run_id),
+            )
+            self._commit_if_needed()
+            return int(cursor.lastrowid)
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def upsert_manager_chip(
+        self, manager_id: int, season_id: int, chip_type: str,
+        gameweek_id: int | None = None, used_at: str | None = None,
+    ) -> int:
+        """Insert or update one manager chip usage record."""
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO manager_chips (
+                    manager_id, season_id, chip_type, gameweek_id, used_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(manager_id, season_id, chip_type) DO UPDATE SET
+                    gameweek_id = excluded.gameweek_id,
+                    used_at = excluded.used_at
+                """,
+                (manager_id, season_id, chip_type, gameweek_id, used_at),
+            )
+            row = self.connection.execute(
+                """SELECT id FROM manager_chips
+                   WHERE manager_id = ? AND season_id = ? AND chip_type = ?""",
+                (manager_id, season_id, chip_type),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("Manager chip was not found after upsert.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc

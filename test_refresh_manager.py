@@ -262,6 +262,16 @@ class FakeFPLSource(FPLDataSource):
             }
         ]
 
+    def fetch_manager_entry(self, manager_id):
+        return {
+            "id": manager_id,
+            "player_first_name": "Test",
+            "player_last_name": "Manager",
+            "name": "Test Team",
+            "summary_overall_points": 317,
+            "summary_overall_rank": 1000,
+        }
+
     def fetch_manager_picks(
         self,
         manager_id,
@@ -272,17 +282,41 @@ class FakeFPLSource(FPLDataSource):
         return {
             "entry_history": {
                 "event": gameweek,
+                "points": 41,
+                "total_points": 317,
+                "rank": 500,
                 "bank": 10,
+                "value": 1005,
+                "event_transfers": 1,
+                "event_transfers_cost": 0,
+                "points_on_bench": 4,
             },
-            "picks": [],
+            "picks": [
+                {"element": 1, "position": 1, "multiplier": 2, "is_captain": True, "is_vice_captain": False, "purchase_price": 70},
+                {"element": 2, "position": 2, "multiplier": 1, "is_captain": False, "is_vice_captain": True, "purchase_price": 65},
+            ],
         }
 
     def fetch_manager_history(self, manager_id):
         self.history_calls += 1
 
         return {
-            "chips": [],
+            "chips": [{"name": "wildcard", "event": 2}],
             "current": [],
+        }
+
+    def fetch_manager_transfers(self, manager_id):
+        return {
+            "transfers": [
+                {
+                    "id": "transfer-1",
+                    "event": 2,
+                    "element_in": 1,
+                    "element_out": 2,
+                    "time": "2026-08-28T10:00:00Z",
+                    "cost": 4,
+                }
+            ]
         }
 
 
@@ -718,3 +752,147 @@ def test_global_refresh_failure_is_recorded(
     )
 
     assert len(rows) == 0
+# ----------------------------------------------------------------------
+# Batch 5 SQLite manager-state tests
+# ----------------------------------------------------------------------
+
+
+def test_manager_refresh_persists_sqlite_state(sqlite_repository):
+    """Manager refresh should persist canonical SQLite manager state."""
+
+    source = FakeFPLSource()
+    manager = FPLRefreshManager(
+        source,
+        repository=sqlite_repository,
+        season_code="2026/27",
+    )
+
+    global_report = manager.refresh_global_data()
+    assert global_report.status == "success", global_report.error
+
+    report = manager.refresh_manager_data(3325156, 2)
+
+    assert report.status == "success", report.error
+    assert report.collections["manager"]["records_written"] == 1
+    assert report.collections["manager_picks"]["records_written"] == 2
+    assert report.collections["manager_transfers"]["records_written"] == 1
+    assert report.collections["manager_chips"]["records_written"] == 1
+
+    user = sqlite_repository.fetch_one(
+        "SELECT * FROM users WHERE external_user_key = ?",
+        ("3325156",),
+    )
+    assert user is not None
+
+    manager_row = sqlite_repository.fetch_one(
+        "SELECT * FROM managers WHERE fpl_manager_id = ?",
+        (3325156,),
+    )
+    assert manager_row is not None
+
+    season = sqlite_repository.get_season("2026/27")
+    gameweek = sqlite_repository.get_gameweek(int(season["id"]), 2)
+
+    state = sqlite_repository.fetch_one(
+        """SELECT * FROM manager_gameweek_state
+           WHERE manager_id = ? AND season_id = ? AND gameweek_id = ?""",
+        (int(manager_row["id"]), int(season["id"]), int(gameweek["id"])),
+    )
+    assert state["points"] == 41
+    assert state["total_points"] == 317
+    assert state["bank"] == 1.0
+    assert state["team_value"] == 100.5
+
+    picks = sqlite_repository.fetch_all(
+        """SELECT * FROM manager_picks
+           WHERE manager_id = ? AND season_id = ? AND gameweek_id = ?
+           ORDER BY player_id""",
+        (int(manager_row["id"]), int(season["id"]), int(gameweek["id"])),
+    )
+    assert len(picks) == 2
+    assert any(row["is_captain"] == 1 for row in picks)
+
+    transfers = sqlite_repository.fetch_all(
+        "SELECT * FROM manager_transfers WHERE manager_id = ?",
+        (int(manager_row["id"]),),
+    )
+    assert len(transfers) == 1
+    assert transfers[0]["external_transfer_id"] == "transfer-1"
+
+    chips = sqlite_repository.fetch_all(
+        "SELECT * FROM manager_chips WHERE manager_id = ?",
+        (int(manager_row["id"]),),
+    )
+    assert len(chips) == 1
+    assert chips[0]["chip_type"] == "wildcard"
+
+    runs = sqlite_repository.fetch_all(
+        """SELECT * FROM ingestion_runs
+           WHERE endpoint_or_file LIKE ?
+           ORDER BY id DESC""",
+        ("entry/3325156/%",),
+    )
+    assert len(runs) == 1
+    assert runs[0]["status"] == "SUCCESS"
+
+
+def test_manager_refresh_requires_global_sqlite_state(sqlite_repository):
+    """SQLite manager refresh must not invent missing global reference data."""
+
+    source = FakeFPLSource()
+    manager = FPLRefreshManager(
+        source,
+        repository=sqlite_repository,
+        season_code="2026/27",
+    )
+
+    report = manager.refresh_manager_data(3325156, 2)
+
+    assert report.status == "failed"
+    assert "Run the global refresh before manager refresh" in report.error
+
+
+def test_manager_refresh_is_repeatable_for_transfers(sqlite_repository):
+    """Refreshing the same manager twice must not duplicate transfers."""
+
+    source = FakeFPLSource()
+    manager = FPLRefreshManager(
+        source, repository=sqlite_repository, season_code="2026/27"
+    )
+
+    assert manager.refresh_global_data().status == "success"
+    assert manager.refresh_manager_data(3325156, 2).status == "success"
+    assert manager.refresh_manager_data(3325156, 2).status == "success"
+
+    rows = sqlite_repository.fetch_all(
+        "SELECT * FROM manager_transfers WHERE manager_id = ?",
+        (1,),
+    )
+    assert len(rows) == 1
+
+
+def test_manager_refresh_failure_completes_ingestion_run(sqlite_repository):
+    """A failure after ingestion-run creation should be recorded as FAILED."""
+
+    class BrokenManagerSource(FakeFPLSource):
+        def fetch_manager_picks(self, manager_id, gameweek):
+            return {
+                "entry_history": {"event": gameweek, "points": 1},
+                "picks": [{"element": 999, "position": 1}],
+            }
+
+    source = BrokenManagerSource()
+    manager = FPLRefreshManager(
+        source, repository=sqlite_repository, season_code="2026/27"
+    )
+    assert manager.refresh_global_data().status == "success"
+
+    report = manager.refresh_manager_data(3325156, 2)
+
+    assert report.status == "failed"
+    runs = sqlite_repository.fetch_all(
+        "SELECT * FROM ingestion_runs WHERE endpoint_or_file LIKE ?",
+        ("entry/3325156/%",),
+    )
+    assert len(runs) == 1
+    assert runs[0]["status"] == "FAILED"

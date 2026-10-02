@@ -1107,73 +1107,249 @@ class FPLRefreshManager:
         gameweek: int,
     ) -> RefreshReport:
         """
-        Refresh user-specific picks and season history.
+        Refresh one manager's official state.
 
-        Manager persistence remains on the existing JSON path in Batch 3.
-
-        We deliberately do not mix manager persistence into the global
-        SQLite refresh until the manager repository methods are ready.
+        JSON mode retains the existing manager persistence contract.
+        SQLite mode persists the canonical user/manager state tables.
         """
 
-        if self.store is None:
+        if self.store is None and self.repository is None:
             raise ValueError(
-                "Manager JSON refresh currently requires a JsonDataStore."
+                "Manager refresh requires a JsonDataStore or Repository."
             )
 
         started_at = _timestamp()
+        ingestion_run_id: int | None = None
 
         try:
-            picks = self.data_source.fetch_manager_picks(
-                manager_id,
-                gameweek,
+            picks = self.data_source.fetch_manager_picks(manager_id, gameweek)
+            manager_data = self.data_source.fetch_manager_entry(manager_id)
+            history = self.data_source.fetch_manager_history(manager_id)
+            transfers = self.data_source.fetch_manager_transfers(manager_id)
+
+            if self.repository is None:
+                picks_stats = self.store.upsert_records(
+                    f"manager_{manager_id}_picks",
+                    [{"record_id": str(gameweek), "payload": picks}],
+                    self.SOURCE_NAME,
+                )
+                history_stats = self.store.upsert_records(
+                    f"manager_{manager_id}_history",
+                    [{"record_id": "season_history", "payload": history}],
+                    self.SOURCE_NAME,
+                )
+                return RefreshReport(
+                    self.SOURCE_NAME, started_at, _timestamp(), "success",
+                    {"manager_picks": picks_stats, "manager_history": history_stats},
+                )
+
+            source_timestamp = _timestamp()
+            season = self.repository.get_season(self.season_code)
+            if season is None:
+                raise ValueError(
+                    f"Season {self.season_code} is not present in SQLite. "
+                    "Run the global refresh before manager refresh."
+                )
+            season_id = int(season["id"])
+
+            gameweek_row = self.repository.get_gameweek(season_id, gameweek)
+            if gameweek_row is None:
+                raise ValueError(
+                    f"Gameweek {gameweek} is not present in SQLite. "
+                    "Run the global refresh before manager refresh."
+                )
+            gameweek_id = int(gameweek_row["id"])
+
+            ingestion_run_id = self.repository.create_ingestion_run(
+                source_system=self.SOURCE_NAME,
+                source_type="API",
+                endpoint_or_file=(
+                    f"entry/{manager_id}/;entry/{manager_id}/event/{gameweek}/picks/;"
+                    f"entry/{manager_id}/history/;entry/{manager_id}/transfers/"
+                ),
+                started_at=started_at,
+                source_retrieved_at=source_timestamp,
+                status="RUNNING",
             )
 
-            history = self.data_source.fetch_manager_history(
-                manager_id
+            user_id = self.repository.upsert_user(
+                external_user_key=str(manager_id),
+                display_name=(
+                    f"{manager_data.get('player_first_name', '')} "
+                    f"{manager_data.get('player_last_name', '')}"
+                ).strip() or None,
+            )
+            manager_db_id = self.repository.upsert_manager(
+                user_id=user_id,
+                fpl_manager_id=manager_id,
+                manager_name=(
+                    f"{manager_data.get('player_first_name', '')} "
+                    f"{manager_data.get('player_last_name', '')}"
+                ).strip() or None,
+                team_name=manager_data.get("name"),
             )
 
-            picks_stats = self.store.upsert_records(
-                f"manager_{manager_id}_picks",
-                [
-                    {
-                        "record_id": str(gameweek),
-                        "payload": picks,
-                    }
-                ],
-                self.SOURCE_NAME,
+            entry_history = picks.get("entry_history", {})
+            self.repository.upsert_manager_gameweek_state(
+                manager_id=manager_db_id,
+                season_id=season_id,
+                gameweek_id=gameweek_id,
+                points=_as_int(entry_history.get("points")),
+                total_points=_as_int(entry_history.get("total_points")),
+                overall_rank=_as_int(manager_data.get("summary_overall_rank")),
+                rank=_as_int(entry_history.get("rank")),
+                bank=(
+                    _as_int(entry_history.get("bank")) / 10.0
+                    if entry_history.get("bank") is not None
+                    else None
+                ),
+                team_value=(
+                    _as_int(entry_history.get("value")) / 10.0
+                    if entry_history.get("value") is not None
+                    else None
+                ),
+                event_transfers=_as_int(entry_history.get("event_transfers")),
+                event_transfers_cost=_as_int(entry_history.get("event_transfers_cost")),
+                points_on_bench=_as_int(entry_history.get("points_on_bench")),
+                source_timestamp=source_timestamp,
+                ingestion_run_id=ingestion_run_id,
             )
 
-            history_stats = self.store.upsert_records(
-                f"manager_{manager_id}_history",
-                [
-                    {
-                        "record_id": "season_history",
-                        "payload": history,
-                    }
-                ],
-                self.SOURCE_NAME,
+            pick_count = 0
+            for pick in picks.get("picks", []):
+                fpl_player_id = _as_int(pick.get("element"))
+                if fpl_player_id is None:
+                    raise ValueError("Manager pick is missing element/player ID.")
+                player = self.repository.fetch_one(
+                    "SELECT id FROM players WHERE fpl_player_id = ?",
+                    (fpl_player_id,),
+                )
+                if player is None:
+                    raise ValueError(
+                        f"Player {fpl_player_id} from manager picks is not present in SQLite. "
+                        "Run the global refresh first."
+                    )
+                self.repository.upsert_manager_pick(
+                    manager_id=manager_db_id,
+                    season_id=season_id,
+                    gameweek_id=gameweek_id,
+                    player_id=int(player["id"]),
+                    position=_as_int(pick.get("position")),
+                    multiplier=_as_int(pick.get("multiplier")),
+                    is_captain=bool(pick.get("is_captain")),
+                    is_vice_captain=bool(pick.get("is_vice_captain")),
+                    purchase_price=(
+                        _as_int(pick.get("purchase_price")) / 10.0
+                        if pick.get("purchase_price") is not None
+                        else None
+                    ),
+                    ingestion_run_id=ingestion_run_id,
+                )
+                pick_count += 1
+
+            transfer_count = 0
+            for transfer in transfers.get("transfers", []):
+                event = _as_int(transfer.get("event"))
+                if event is None:
+                    raise ValueError("Manager transfer is missing its Gameweek event.")
+                transfer_gameweek = self.repository.get_gameweek(season_id, event)
+                if transfer_gameweek is None:
+                    raise ValueError(
+                        f"Transfer references Gameweek {event}, which is not present in SQLite."
+                    )
+                player_in = self.repository.fetch_one(
+                    "SELECT id FROM players WHERE fpl_player_id = ?",
+                    (_as_int(transfer.get("element_in")),),
+                )
+                player_out = self.repository.fetch_one(
+                    "SELECT id FROM players WHERE fpl_player_id = ?",
+                    (_as_int(transfer.get("element_out")),),
+                )
+                if player_in is None or player_out is None:
+                    raise ValueError(
+                        "Manager transfer references a player missing from SQLite. "
+                        "Run the global refresh first."
+                    )
+                self.repository.create_manager_transfer(
+                    manager_id=manager_db_id,
+                    season_id=season_id,
+                    gameweek_id=int(transfer_gameweek["id"]),
+                    transfer_timestamp=transfer.get("time"),
+                    player_in_id=int(player_in["id"]),
+                    player_out_id=int(player_out["id"]),
+                    cost=_as_int(transfer.get("cost")),
+                    external_transfer_id=(
+                        str(transfer["id"]) if transfer.get("id") is not None else None
+                    ),
+                    ingestion_run_id=ingestion_run_id,
+                )
+                transfer_count += 1
+
+            chip_count = 0
+            for chip in history.get("chips", []):
+                chip_type = chip.get("name")
+                if not chip_type:
+                    continue
+                chip_event = _as_int(chip.get("event"))
+                chip_gameweek_id = None
+                if chip_event is not None:
+                    chip_gameweek = self.repository.get_gameweek(season_id, chip_event)
+                    if chip_gameweek is None:
+                        raise ValueError(
+                            f"Chip references Gameweek {chip_event}, which is not present in SQLite."
+                        )
+                    chip_gameweek_id = int(chip_gameweek["id"])
+                self.repository.upsert_manager_chip(
+                    manager_id=manager_db_id,
+                    season_id=season_id,
+                    chip_type=str(chip_type),
+                    gameweek_id=chip_gameweek_id,
+                )
+                chip_count += 1
+
+            self.repository.complete_ingestion_run(
+                ingestion_run_id=ingestion_run_id,
+                status="SUCCESS",
+                completed_at=_timestamp(),
+                records_received=(
+                    1 + len(picks.get("picks", [])) +
+                    len(transfers.get("transfers", [])) +
+                    len(history.get("chips", []))
+                ),
+                records_written=1 + pick_count + transfer_count + chip_count,
+                records_rejected=0,
+                validation_status="PASS",
             )
 
             return RefreshReport(
-                self.SOURCE_NAME,
-                started_at,
-                _timestamp(),
-                "success",
+                self.SOURCE_NAME, started_at, _timestamp(), "success",
                 {
-                    "manager_picks": picks_stats,
-                    "manager_history": history_stats,
+                    "manager": {"records_written": 1},
+                    "manager_picks": {"records_written": pick_count},
+                    "manager_transfers": {"records_written": transfer_count},
+                    "manager_chips": {"records_written": chip_count},
                 },
             )
 
         except Exception as exc:
-
+            if ingestion_run_id is not None and self.repository is not None:
+                try:
+                    self.repository.complete_ingestion_run(
+                        ingestion_run_id=ingestion_run_id,
+                        status="FAILED",
+                        completed_at=_timestamp(),
+                        records_received=0,
+                        records_written=0,
+                        records_rejected=0,
+                        validation_status="FAIL",
+                        error_message=str(exc),
+                    )
+                except Exception:
+                    # Preserve the original refresh error if provenance
+                    # completion itself cannot be persisted.
+                    pass
             return RefreshReport(
-                self.SOURCE_NAME,
-                started_at,
-                _timestamp(),
-                "failed",
-                {},
-                str(exc),
+                self.SOURCE_NAME, started_at, _timestamp(), "failed", {}, str(exc)
             )
 
     # ------------------------------------------------------------------

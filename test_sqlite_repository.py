@@ -1040,3 +1040,162 @@ def test_duplicate_fpl_player_id_is_rejected(
             second_name="Player",
             web_name="Player",
         )
+# ----------------------------------------------------------------------
+# Batch 5 manager/user persistence tests
+# ----------------------------------------------------------------------
+
+
+def test_upsert_user_and_manager(repository: SQLiteRepository):
+    """Users and managers should be stable upserts."""
+
+    user_id = repository.upsert_user("3325156", "Test Manager")
+    same_user_id = repository.upsert_user("3325156", "Updated Manager")
+
+    assert same_user_id == user_id
+
+    manager_id = repository.upsert_manager(
+        user_id=user_id,
+        fpl_manager_id=3325156,
+        manager_name="Test Manager",
+        team_name="Test Team",
+    )
+    same_manager_id = repository.upsert_manager(
+        user_id=user_id,
+        fpl_manager_id=3325156,
+        manager_name="Updated Manager",
+        team_name="Updated Team",
+    )
+
+    assert same_manager_id == manager_id
+
+    manager = repository.fetch_one(
+        "SELECT * FROM managers WHERE id = ?",
+        (manager_id,),
+    )
+    assert manager["manager_name"] == "Updated Manager"
+    assert manager["team_name"] == "Updated Team"
+
+
+def test_manager_gameweek_state_upsert(repository: SQLiteRepository):
+    """Manager Gameweek state should update rather than duplicate."""
+
+    season_id = repository.create_season("2026/27")
+    gameweek_id = repository.create_gameweek(season_id, 2, "Gameweek 2")
+    user_id = repository.upsert_user("3325156", "Test Manager")
+    manager_id = repository.upsert_manager(user_id, 3325156)
+
+    state_id = repository.upsert_manager_gameweek_state(
+        manager_id=manager_id,
+        season_id=season_id,
+        gameweek_id=gameweek_id,
+        points=41,
+        total_points=317,
+        overall_rank=100,
+        rank=500,
+        bank=1.0,
+        team_value=100.5,
+    )
+    same_id = repository.upsert_manager_gameweek_state(
+        manager_id=manager_id,
+        season_id=season_id,
+        gameweek_id=gameweek_id,
+        points=55,
+        total_points=331,
+        overall_rank=90,
+        rank=400,
+        bank=2.0,
+        team_value=100.6,
+    )
+
+    assert same_id == state_id
+    row = repository.fetch_one(
+        "SELECT * FROM manager_gameweek_state WHERE id = ?",
+        (state_id,),
+    )
+    assert row["points"] == 55
+    assert row["total_points"] == 331
+    assert row["bank"] == 2.0
+
+
+def test_manager_pick_and_chip_persistence(repository: SQLiteRepository):
+    """Manager picks and chips should persist with their FKs."""
+
+    season_id = repository.create_season("2026/27")
+    gameweek_id = repository.create_gameweek(season_id, 2, "Gameweek 2")
+    user_id = repository.upsert_user("3325156")
+    manager_id = repository.upsert_manager(user_id, 3325156)
+    player_id = repository.upsert_player(1, "Player", "A", "PlayerA")
+
+    pick_id = repository.upsert_manager_pick(
+        manager_id=manager_id,
+        season_id=season_id,
+        gameweek_id=gameweek_id,
+        player_id=player_id,
+        position=1,
+        multiplier=2,
+        is_captain=True,
+        purchase_price=7.0,
+    )
+    same_pick_id = repository.upsert_manager_pick(
+        manager_id=manager_id,
+        season_id=season_id,
+        gameweek_id=gameweek_id,
+        player_id=player_id,
+        position=1,
+        multiplier=1,
+        is_captain=False,
+        purchase_price=7.1,
+    )
+
+    chip_id = repository.upsert_manager_chip(
+        manager_id=manager_id,
+        season_id=season_id,
+        chip_type="wildcard",
+        gameweek_id=gameweek_id,
+    )
+
+    assert same_pick_id == pick_id
+    assert chip_id > 0
+
+    pick = repository.fetch_one(
+        "SELECT * FROM manager_picks WHERE id = ?",
+        (pick_id,),
+    )
+    assert pick["multiplier"] == 1
+    assert pick["is_captain"] == 0
+
+    chip = repository.fetch_one(
+        "SELECT * FROM manager_chips WHERE id = ?",
+        (chip_id,),
+    )
+    assert chip["chip_type"] == "wildcard"
+
+
+def test_manager_transfer_persistence(repository: SQLiteRepository):
+    """Manager transfers should persist as immutable event records."""
+
+    season_id = repository.create_season("2026/27")
+    gameweek_id = repository.create_gameweek(season_id, 2, "Gameweek 2")
+    user_id = repository.upsert_user("3325156")
+    manager_id = repository.upsert_manager(user_id, 3325156)
+    player_in = repository.upsert_player(1)
+    player_out = repository.upsert_player(2)
+
+    transfer_id = repository.create_manager_transfer(
+        manager_id=manager_id,
+        season_id=season_id,
+        gameweek_id=gameweek_id,
+        transfer_timestamp="2026-08-28T10:00:00Z",
+        player_in_id=player_in,
+        player_out_id=player_out,
+        cost=4,
+        external_transfer_id="transfer-1",
+    )
+
+    transfer = repository.fetch_one(
+        "SELECT * FROM manager_transfers WHERE id = ?",
+        (transfer_id,),
+    )
+    assert transfer["player_in_id"] == player_in
+    assert transfer["player_out_id"] == player_out
+    assert transfer["cost"] == 4
