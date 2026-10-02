@@ -231,3 +231,21 @@ def get_player_summary(player_id):
 
     # Retrieve and return the player's official FPL data.
     return _get_api_data(endpoint)
+
+# ============================================================
+# 9. DREAM TEAM
+# ============================================================
+
+# Get the official Dream Team for one completed Gameweek.
+# The endpoint is published by FPL after the Gameweek is processed.
+def get_gameweek_dream_team(gameweek):
+    """Retrieve the official FPL Dream Team for one Gameweek."""
+    gameweek = int(gameweek)
+    if gameweek < 1:
+        raise ValueError("gameweek must be positive")
+    return _get_api_data(f"dream-team/{gameweek}/")
+
+
+def get_season_dream_team():
+    """Retrieve the official FPL season-to-date Dream Team."""
+    return _get_api_data("dream-team/")
