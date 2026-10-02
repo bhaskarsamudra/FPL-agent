@@ -29,17 +29,23 @@ class FPLDataSource:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
 
-    def fetch_json(self, endpoint: str) -> dict[str, Any]:
-        """Fetch and parse a JSON endpoint."""
+    def _fetch_payload(self, endpoint: str) -> Any:
+        """Fetch and parse one JSON endpoint without assuming its top-level type."""
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         request = Request(url, headers={"User-Agent": "FPL-Strategist/1.0"})
         try:
             with urlopen(request, timeout=self.timeout_seconds) as response:
-                payload = json.load(response)
+                return json.load(response)
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise FPLAPIError(f"FPL API request failed: {url}") from exc
+
+    def fetch_json(self, endpoint: str) -> dict[str, Any]:
+        """Fetch and parse a dictionary-shaped JSON endpoint."""
+        payload = self._fetch_payload(endpoint)
         if not isinstance(payload, dict):
-            raise FPLAPIError(f"Unexpected FPL payload: {url}")
+            raise FPLAPIError(
+                f"Unexpected non-object FPL payload: {self.base_url}/{endpoint.lstrip('/')}"
+            )
         return payload
 
     def fetch_bootstrap_static(self) -> dict[str, Any]:
@@ -53,13 +59,34 @@ class FPLDataSource:
             raise FPLAPIError("FPL fixtures endpoint returned a non-list payload.")
         return payload
 
+    def fetch_manager_entry(self, manager_id: int) -> dict[str, Any]:
+        """Fetch one manager's official entry profile."""
+        return self.fetch_json(f"entry/{manager_id}/")
+
     def fetch_manager_picks(self, manager_id: int, gameweek: int) -> dict[str, Any]:
         """Fetch a manager's picks and GW history."""
         return self.fetch_json(f"entry/{manager_id}/event/{gameweek}/picks/")
 
+    def fetch_manager_transfers(self, manager_id: int) -> dict[str, Any]:
+        """Fetch one manager's official transfer history."""
+        payload = self._fetch_payload(f"entry/{manager_id}/transfers/")
+        if not isinstance(payload, list):
+            raise FPLAPIError("FPL transfers endpoint returned a non-list payload.")
+        return {"transfers": payload}
+
     def fetch_manager_history(self, manager_id: int) -> dict[str, Any]:
         """Fetch a manager's season history and chips."""
         return self.fetch_json(f"entry/{manager_id}/history/")
+
+    def fetch_classic_league_standings(
+        self,
+        league_id: int,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """Fetch one page of a classic league standings endpoint."""
+        return self.fetch_json(
+            f"leagues-classic/{league_id}/standings/?page_standings={page}"
+        )
 
     def fetch_element_summary(self, player_id: int) -> dict[str, Any]:
         """Fetch one player's history and upcoming fixtures."""
