@@ -28,6 +28,7 @@ from captain_engine import CaptainCandidate, rank_captain_candidates
 from chip_engine import ChipScenarioEvaluation
 from dream_team_engine import DreamTeamGap, DreamTeamSnapshot
 from rival_engine import RivalSnapshot, identify_nearest_rivals
+from multi_gw_strategy import MultiGWStrategicPlan, evaluate_multi_gw_options
 from transfer_engine import TransferCandidate, generate_transfer_candidates
 
 
@@ -101,6 +102,7 @@ class StrategicDecision:
     transfer_candidates: tuple[TransferCandidate, ...]
     captain_candidates: tuple[CaptainCandidate, ...]
     chip_opportunities: tuple[ChipScenarioEvaluation, ...]
+    multi_gw_plan: MultiGWStrategicPlan | None
     rival_context: RivalDecisionContext | None
     dream_context: DreamTeamDecisionContext | None
     data_complete: bool
@@ -315,15 +317,17 @@ def build_strategic_decision(
             )
         )
 
-    complete_options = [item for item in options if item.data_complete]
-    selected = max(
-        complete_options,
-        key=lambda item: (
-            item.projected_horizon_points,
-            item.incremental_horizon_points,
-            item.option_id,
-        ),
-        default=None,
+    multi_gw_plan = evaluate_multi_gw_options(
+        decision_gameweek=decision_gameweek,
+        horizon_gameweeks=horizon_gameweeks or (target_gameweek,),
+        options=options,
+        projections=projections,
+        free_transfers_before=int(manager_state.free_transfers),
+    )
+    selected_option_id = multi_gw_plan.selected_option_id
+    selected = next(
+        (item for item in options if item.option_id == selected_option_id),
+        None,
     )
 
     if selected is None:
@@ -343,6 +347,7 @@ def build_strategic_decision(
         transfer_candidates=transfers,
         captain_candidates=captains,
         chip_opportunities=chips,
+        multi_gw_plan=multi_gw_plan,
         rival_context=rival_context,
         dream_context=dream_context,
         data_complete=data_complete,
