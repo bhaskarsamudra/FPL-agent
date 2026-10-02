@@ -71,9 +71,11 @@ def build_strategy(
         free_transfers=int(manager_state.free_transfers),
     )
 
+    captain_gameweek = int(horizon_gameweeks[0]) if horizon_gameweeks else int(manager_state.gameweek)
     captain_candidates = rank_captain_candidates(
         squad=squad,
         projections=projections,
+        gameweek=captain_gameweek,
     )
 
     captain_xp = (
