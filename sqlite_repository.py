@@ -168,6 +168,127 @@ class SQLiteRepository(Repository):
             self._transaction_active = False
 
     # ------------------------------------------------------------------
+    # Dataset freshness methods
+    # ------------------------------------------------------------------
+
+    def get_dataset_freshness(
+        self,
+        dataset_name: str,
+    ) -> sqlite3.Row | None:
+        """Return freshness metadata for one dataset, or None."""
+        return self.fetch_one(
+            """
+            SELECT *
+            FROM dataset_freshness
+            WHERE dataset_name = ?
+            """,
+            (dataset_name,),
+        )
+
+    def upsert_dataset_freshness(
+        self,
+        dataset_name: str,
+        last_successful_ingestion_id: int | None = None,
+        last_attempted_ingestion_id: int | None = None,
+        last_successful_refresh_at: str | None = None,
+        last_attempted_refresh_at: str | None = None,
+        freshness_threshold_seconds: int | None = None,
+        freshness_status: str | None = None,
+        current_gameweek_id: int | None = None,
+    ) -> int:
+        """Insert or update freshness metadata for one dataset."""
+        updated_at = self._utc_now()
+
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO dataset_freshness (
+                    dataset_name,
+                    last_successful_ingestion_id,
+                    last_attempted_ingestion_id,
+                    last_successful_refresh_at,
+                    last_attempted_refresh_at,
+                    freshness_threshold_seconds,
+                    freshness_status,
+                    current_gameweek_id,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(dataset_name)
+                DO UPDATE SET
+                    last_successful_ingestion_id =
+                        COALESCE(
+                            excluded.last_successful_ingestion_id,
+                            dataset_freshness.last_successful_ingestion_id
+                        ),
+                    last_attempted_ingestion_id =
+                        COALESCE(
+                            excluded.last_attempted_ingestion_id,
+                            dataset_freshness.last_attempted_ingestion_id
+                        ),
+                    last_successful_refresh_at =
+                        COALESCE(
+                            excluded.last_successful_refresh_at,
+                            dataset_freshness.last_successful_refresh_at
+                        ),
+                    last_attempted_refresh_at =
+                        COALESCE(
+                            excluded.last_attempted_refresh_at,
+                            dataset_freshness.last_attempted_refresh_at
+                        ),
+                    freshness_threshold_seconds =
+                        COALESCE(
+                            excluded.freshness_threshold_seconds,
+                            dataset_freshness.freshness_threshold_seconds
+                        ),
+                    freshness_status =
+                        COALESCE(
+                            excluded.freshness_status,
+                            dataset_freshness.freshness_status
+                        ),
+                    current_gameweek_id =
+                        COALESCE(
+                            excluded.current_gameweek_id,
+                            dataset_freshness.current_gameweek_id
+                        ),
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    dataset_name,
+                    last_successful_ingestion_id,
+                    last_attempted_ingestion_id,
+                    last_successful_refresh_at,
+                    last_attempted_refresh_at,
+                    freshness_threshold_seconds,
+                    freshness_status,
+                    current_gameweek_id,
+                    updated_at,
+                ),
+            )
+
+            row = self.connection.execute(
+                """
+                SELECT id
+                FROM dataset_freshness
+                WHERE dataset_name = ?
+                """,
+                (dataset_name,),
+            ).fetchone()
+
+            if row is None:
+                raise RepositoryError(
+                    "Dataset freshness upsert succeeded but record was not found."
+                )
+
+            self._commit_if_needed()
+            return int(row["id"])
+
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    # ------------------------------------------------------------------
     # Season methods
     # ------------------------------------------------------------------
 

@@ -1034,3 +1034,116 @@ def test_manager_refresh_supports_multiple_leagues_with_overlapping_rivals(
     assert sqlite_repository.fetch_one(
         "SELECT COUNT(*) AS count FROM rival_squad_snapshots"
     )["count"] == 8
+
+# ----------------------------------------------------------------------
+# Batch 7 freshness-aware refresh tests
+# ----------------------------------------------------------------------
+
+
+def test_refresh_if_needed_skips_fresh_global_data(sqlite_repository):
+    """A second global refresh check should use stored freshness."""
+
+    source = FakeFPLSource()
+    manager = FPLRefreshManager(
+        source,
+        repository=sqlite_repository,
+        season_code="2026/27",
+    )
+
+    first = manager.refresh_if_needed()
+    assert first.status == "success", first.error
+    assert source.bootstrap_calls == 1
+    assert source.fixture_calls == 1
+
+    second = manager.refresh_if_needed()
+    assert second.status == "skipped"
+    assert source.bootstrap_calls == 1
+    assert source.fixture_calls == 1
+
+    bootstrap = sqlite_repository.get_dataset_freshness("bootstrap_static")
+    fixtures = sqlite_repository.get_dataset_freshness("fixtures")
+
+    assert bootstrap is not None
+    assert fixtures is not None
+    assert bootstrap["freshness_status"] == "FRESH"
+    assert fixtures["freshness_status"] == "FRESH"
+
+
+def test_refresh_if_needed_refreshes_stale_global_data(sqlite_repository):
+    """A stale global dataset should trigger a new global refresh."""
+
+    source = FakeFPLSource()
+    manager = FPLRefreshManager(
+        source,
+        repository=sqlite_repository,
+        season_code="2026/27",
+    )
+
+    assert manager.refresh_if_needed().status == "success"
+    assert source.bootstrap_calls == 1
+
+    sqlite_repository.upsert_dataset_freshness(
+        dataset_name="bootstrap_static",
+        last_successful_refresh_at="2020-01-01T00:00:00+00:00",
+        freshness_status="STALE",
+    )
+
+    report = manager.refresh_if_needed()
+
+    assert report.status == "success", report.error
+    assert source.bootstrap_calls == 2
+    assert source.fixture_calls == 2
+
+
+def test_refresh_if_needed_skips_fresh_manager_state(sqlite_repository):
+    """Manager refresh should also become freshness-aware."""
+
+    source = FakeFPLSource()
+    manager = FPLRefreshManager(
+        source,
+        repository=sqlite_repository,
+        season_code="2026/27",
+    )
+
+    first = manager.refresh_if_needed(manager_id=3325156, gameweek=2)
+    assert first.status == "success", first.error
+    assert source.picks_calls == 1
+
+    second = manager.refresh_if_needed(manager_id=3325156, gameweek=2)
+    assert second.status == "skipped"
+    assert source.picks_calls == 1
+
+    freshness = sqlite_repository.get_dataset_freshness("manager_state:3325156")
+    assert freshness is not None
+    assert freshness["freshness_status"] == "FRESH"
+
+
+def test_failed_global_refresh_does_not_mark_dataset_fresh(sqlite_repository):
+    """A validation failure after ingestion starts must leave freshness stale."""
+
+    class BrokenBootstrapSource(FakeFPLSource):
+        def fetch_bootstrap_static(self):
+            payload = super().fetch_bootstrap_static()
+            payload["elements"] = {"invalid": True}
+            return payload
+
+    source = BrokenBootstrapSource()
+    manager = FPLRefreshManager(
+        source,
+        repository=sqlite_repository,
+        season_code="2026/27",
+    )
+
+    report = manager.refresh_if_needed()
+
+    assert report.status == "failed"
+
+    bootstrap = sqlite_repository.get_dataset_freshness("bootstrap_static")
+    fixtures = sqlite_repository.get_dataset_freshness("fixtures")
+
+    assert bootstrap is not None
+    assert fixtures is not None
+    assert bootstrap["freshness_status"] == "STALE"
+    assert fixtures["freshness_status"] == "STALE"
+    assert bootstrap["last_successful_ingestion_id"] is None
+    assert fixtures["last_successful_ingestion_id"] is None

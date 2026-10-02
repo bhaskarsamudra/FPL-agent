@@ -74,6 +74,29 @@ class Repository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_dataset_freshness(
+        self,
+        dataset_name: str,
+    ) -> Any:
+        """Return freshness metadata for one dataset, or None."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_dataset_freshness(
+        self,
+        dataset_name: str,
+        last_successful_ingestion_id: int | None = None,
+        last_attempted_ingestion_id: int | None = None,
+        last_successful_refresh_at: str | None = None,
+        last_attempted_refresh_at: str | None = None,
+        freshness_threshold_seconds: int | None = None,
+        freshness_status: str | None = None,
+        current_gameweek_id: int | None = None,
+    ) -> int:
+        """Insert or update freshness metadata for one dataset."""
+        raise NotImplementedError
+
+    @abstractmethod
     def upsert_user(
         self,
         external_user_key: str,

@@ -33,6 +33,7 @@ from typing import Any
 
 from data_store import JsonDataStore
 from fpl_data_source import FPLDataSource
+from freshness_policy import get_policy, is_fresh
 from repository import Repository
 
 
@@ -122,6 +123,37 @@ def _as_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _age_minutes(timestamp: str | None) -> float | None:
+    """Return the age of an ISO timestamp in minutes."""
+
+    if not timestamp:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return max(
+        0.0,
+        (datetime.now(timezone.utc) - parsed).total_seconds() / 60.0,
+    )
+
+
+def _freshness_key(
+    dataset: str,
+    identifier: str | int | None = None,
+) -> str:
+    """Build a unique freshness key for global or scoped data."""
+
+    if identifier is None:
+        return dataset
+    return f"{dataset}:{identifier}"
 
 
 # ----------------------------------------------------------------------
@@ -532,6 +564,60 @@ class FPLRefreshManager:
             )
 
     # ------------------------------------------------------------------
+    # Freshness helpers
+    # ------------------------------------------------------------------
+
+    def _dataset_is_fresh(
+        self,
+        dataset_name: str,
+        policy_dataset: str | None = None,
+    ) -> bool:
+        """Check repository freshness against the configured policy."""
+
+        if self.repository is None:
+            return False
+
+        policy_name = policy_dataset or dataset_name
+        freshness = self.repository.get_dataset_freshness(dataset_name)
+        if freshness is None:
+            return False
+
+        age = _age_minutes(freshness["last_successful_refresh_at"])
+        return is_fresh(age, policy_name)
+
+    def _record_freshness_attempt(
+        self,
+        dataset_name: str,
+        ingestion_run_id: int,
+        attempted_at: str,
+        current_gameweek_id: int | None = None,
+        status: str = "STALE",
+        successful: bool = False,
+    ) -> None:
+        """Record attempted or successful refresh metadata."""
+
+        policy_name = dataset_name.split(":", 1)[0]
+        policy = get_policy(policy_name)
+        threshold = policy.ttl_for_context()
+
+        self.repository.upsert_dataset_freshness(
+            dataset_name=dataset_name,
+            last_successful_ingestion_id=(
+                ingestion_run_id if successful else None
+            ),
+            last_attempted_ingestion_id=ingestion_run_id,
+            last_successful_refresh_at=(
+                attempted_at if successful else None
+            ),
+            last_attempted_refresh_at=attempted_at,
+            freshness_threshold_seconds=(
+                threshold * 60 if threshold is not None else None
+            ),
+            freshness_status=("FRESH" if successful else status),
+            current_gameweek_id=current_gameweek_id,
+        )
+
+    # ------------------------------------------------------------------
     # SQLite global refresh
     # ------------------------------------------------------------------
 
@@ -572,6 +658,13 @@ class FPLRefreshManager:
                 started_at=started_at,
                 source_retrieved_at=source_retrieved_at,
                 status="RUNNING",
+            )
+
+            self._record_freshness_attempt(
+                "bootstrap_static", ingestion_run_id, source_retrieved_at
+            )
+            self._record_freshness_attempt(
+                "fixtures", ingestion_run_id, source_retrieved_at
             )
 
             # ----------------------------------------------------------
@@ -694,6 +787,12 @@ class FPLRefreshManager:
                     gameweek_db_ids[
                         gameweek_number
                     ] = int(existing_gameweek["id"])
+
+            current_gameweek_id = None
+            for event in events:
+                if event.get("is_current") and "id" in event:
+                    current_gameweek_id = gameweek_db_ids.get(int(event["id"]))
+                    break
 
             # ----------------------------------------------------------
             # Persist teams and team snapshots.
@@ -955,9 +1054,10 @@ class FPLRefreshManager:
                 + counts["player_gameweek_stats"]
             )
 
+            completed_at = _timestamp()
             self.repository.complete_ingestion_run(
                 ingestion_run_id=ingestion_run_id,
-                completed_at=_timestamp(),
+                completed_at=completed_at,
                 status="SUCCESS",
                 records_received=records_received,
                 records_written=records_written,
@@ -966,7 +1066,14 @@ class FPLRefreshManager:
                 error_message=None,
             )
 
-            completed_at = _timestamp()
+            self._record_freshness_attempt(
+                "bootstrap_static", ingestion_run_id, source_retrieved_at,
+                current_gameweek_id=current_gameweek_id, successful=True,
+            )
+            self._record_freshness_attempt(
+                "fixtures", ingestion_run_id, source_retrieved_at,
+                current_gameweek_id=current_gameweek_id, successful=True,
+            )
 
             return RefreshReport(
                 source=self.SOURCE_NAME,
@@ -1003,6 +1110,20 @@ class FPLRefreshManager:
                     # Do not hide the original refresh error because
                     # failure recording itself failed.
                     pass
+
+                failed_at = _timestamp()
+                for dataset_name in ("bootstrap_static", "fixtures"):
+                    try:
+                        self._record_freshness_attempt(
+                            dataset_name,
+                            ingestion_run_id,
+                            failed_at,
+                            current_gameweek_id=locals().get(
+                                "current_gameweek_id"
+                            ),
+                        )
+                    except Exception:
+                        pass
 
             return RefreshReport(
                 source=self.SOURCE_NAME,
@@ -1145,6 +1266,14 @@ class FPLRefreshManager:
             source_retrieved_at=started_at,
             status="RUNNING",
         )
+
+        for league_id in unique_league_ids:
+            self._record_freshness_attempt(
+                _freshness_key("league_state", league_id),
+                ingestion_run_id,
+                started_at,
+                current_gameweek_id=gameweek_id,
+            )
 
         counts = {
             "leagues": 0,
@@ -1306,10 +1435,11 @@ class FPLRefreshManager:
                         )
                         counts["rival_squad_snapshots"] += 1
 
+            completed_at = _timestamp()
             self.repository.complete_ingestion_run(
                 ingestion_run_id=ingestion_run_id,
                 status="SUCCESS",
-                completed_at=_timestamp(),
+                completed_at=completed_at,
                 records_received=(
                     counts["league_standings"]
                     + counts["rival_squad_snapshots"]
@@ -1318,6 +1448,14 @@ class FPLRefreshManager:
                 records_rejected=0,
                 validation_status="PASS",
             )
+            for league_id in unique_league_ids:
+                self._record_freshness_attempt(
+                    _freshness_key("league_state", league_id),
+                    ingestion_run_id,
+                    started_at,
+                    current_gameweek_id=gameweek_id,
+                    successful=True,
+                )
             return counts
 
         except Exception as exc:
@@ -1331,6 +1469,16 @@ class FPLRefreshManager:
                 validation_status="FAIL",
                 error_message=str(exc),
             )
+            for league_id in unique_league_ids:
+                try:
+                    self._record_freshness_attempt(
+                        _freshness_key("league_state", league_id),
+                        ingestion_run_id,
+                        _timestamp(),
+                        current_gameweek_id=gameweek_id,
+                    )
+                except Exception:
+                    pass
             raise
 
     # ------------------------------------------------------------------
@@ -1407,6 +1555,13 @@ class FPLRefreshManager:
                 started_at=started_at,
                 source_retrieved_at=source_timestamp,
                 status="RUNNING",
+            )
+
+            self._record_freshness_attempt(
+                _freshness_key("manager_state", manager_id),
+                ingestion_run_id,
+                source_timestamp,
+                current_gameweek_id=gameweek_id,
             )
 
             user_id = self.repository.upsert_user(
@@ -1558,10 +1713,11 @@ class FPLRefreshManager:
                     primary_manager_picks=picks,
                 )
 
+            completed_at = _timestamp()
             self.repository.complete_ingestion_run(
                 ingestion_run_id=ingestion_run_id,
                 status="SUCCESS",
-                completed_at=_timestamp(),
+                completed_at=completed_at,
                 records_received=(
                     1 + len(picks.get("picks", [])) +
                     len(transfers.get("transfers", [])) +
@@ -1570,6 +1726,14 @@ class FPLRefreshManager:
                 records_written=1 + pick_count + transfer_count + chip_count,
                 records_rejected=0,
                 validation_status="PASS",
+            )
+
+            self._record_freshness_attempt(
+                _freshness_key("manager_state", manager_id),
+                ingestion_run_id,
+                source_timestamp,
+                current_gameweek_id=gameweek_id,
+                successful=True,
             )
 
             collections = {
@@ -1603,6 +1767,15 @@ class FPLRefreshManager:
                     )
                 except Exception:
                     pass
+                try:
+                    self._record_freshness_attempt(
+                        _freshness_key("manager_state", manager_id),
+                        ingestion_run_id,
+                        _timestamp(),
+                        current_gameweek_id=locals().get("gameweek_id"),
+                    )
+                except Exception:
+                    pass
             return RefreshReport(
                 self.SOURCE_NAME, started_at, _timestamp(), "failed", {}, str(exc)
             )
@@ -1617,18 +1790,78 @@ class FPLRefreshManager:
         gameweek: int | None = None,
         league_ids: list[int] | None = None,
     ) -> RefreshReport:
-        """
-        Run the current explicit refresh policy.
+        """Refresh only when the relevant stored datasets are stale."""
 
-        Freshness windows and dependency-aware scheduling remain
-        intentionally separate from this persistence integration.
-        """
+        # Legacy JSON mode retains its previous explicit-refresh behaviour.
+        if self.repository is None:
+            if manager_id is not None and gameweek is not None:
+                return self.refresh_manager_data(
+                    manager_id,
+                    gameweek,
+                    league_ids=league_ids,
+                )
+            return self.refresh_global_data()
 
-        if manager_id is not None and gameweek is not None:
-            return self.refresh_manager_data(
-                manager_id,
-                gameweek,
-                league_ids=league_ids,
+        # Global reference data is a dependency for manager and league data.
+        global_fresh = all(
+            self._dataset_is_fresh(dataset_name)
+            for dataset_name in ("bootstrap_static", "fixtures")
+        )
+
+        global_refreshed = False
+        if not global_fresh:
+            global_report = self.refresh_global_data()
+            if global_report.status != "success":
+                return global_report
+            global_refreshed = True
+
+        if manager_id is None or gameweek is None:
+            if global_refreshed:
+                return global_report
+
+            return RefreshReport(
+                source=self.SOURCE_NAME,
+                started_at=_timestamp(),
+                completed_at=_timestamp(),
+                status="skipped",
+                collections={
+                    "bootstrap_static": {"skipped": 1},
+                    "fixtures": {"skipped": 1},
+                },
             )
 
-        return self.refresh_global_data()
+        manager_key = _freshness_key("manager_state", manager_id)
+        manager_fresh = self._dataset_is_fresh(
+            manager_key,
+            "manager_state",
+        )
+
+        league_keys = [
+            _freshness_key("league_state", league_id)
+            for league_id in dict.fromkeys(league_ids or [])
+        ]
+        leagues_fresh = all(
+            self._dataset_is_fresh(key, "league_state")
+            for key in league_keys
+        )
+
+        if manager_fresh and leagues_fresh:
+            return RefreshReport(
+                source=self.SOURCE_NAME,
+                started_at=_timestamp(),
+                completed_at=_timestamp(),
+                status="skipped",
+                collections={
+                    "manager_state": {"skipped": 1},
+                    **(
+                        {"league_state": {"skipped": len(league_keys)}}
+                        if league_keys else {}
+                    ),
+                },
+            )
+
+        return self.refresh_manager_data(
+            manager_id,
+            gameweek,
+            league_ids=league_ids,
+        )

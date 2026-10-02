@@ -1199,3 +1199,90 @@ def test_manager_transfer_persistence(repository: SQLiteRepository):
     assert transfer["player_in_id"] == player_in
     assert transfer["player_out_id"] == player_out
     assert transfer["cost"] == 4
+
+# ----------------------------------------------------------------------
+# Batch 7 dataset freshness tests
+# ----------------------------------------------------------------------
+
+
+def test_dataset_freshness_can_be_created_and_retrieved(
+    repository: SQLiteRepository,
+):
+    """Dataset freshness metadata can be persisted and retrieved."""
+
+    ingestion_id = repository.create_ingestion_run(
+        source_system="fpl_api",
+        source_type="API",
+        endpoint_or_file="bootstrap-static/",
+        started_at="2026-10-02T10:00:00+00:00",
+        source_retrieved_at="2026-10-02T10:00:00+00:00",
+        status="SUCCESS",
+    )
+
+    freshness_id = repository.upsert_dataset_freshness(
+        dataset_name="bootstrap_static",
+        last_successful_ingestion_id=ingestion_id,
+        last_attempted_ingestion_id=ingestion_id,
+        last_successful_refresh_at="2026-10-02T10:00:00+00:00",
+        last_attempted_refresh_at="2026-10-02T10:00:00+00:00",
+        freshness_threshold_seconds=21600,
+        freshness_status="FRESH",
+    )
+
+    row = repository.get_dataset_freshness("bootstrap_static")
+
+    assert row is not None
+    assert row["id"] == freshness_id
+    assert row["last_successful_ingestion_id"] == ingestion_id
+    assert row["last_attempted_ingestion_id"] == ingestion_id
+    assert row["freshness_threshold_seconds"] == 21600
+    assert row["freshness_status"] == "FRESH"
+
+
+def test_dataset_freshness_update_preserves_previous_success(
+    repository: SQLiteRepository,
+):
+    """A failed/new attempt must not erase the last successful refresh."""
+
+    first_ingestion_id = repository.create_ingestion_run(
+        source_system="fpl_api",
+        source_type="API",
+        endpoint_or_file="fixtures/",
+        started_at="2026-10-02T10:00:00+00:00",
+        source_retrieved_at="2026-10-02T10:00:00+00:00",
+        status="SUCCESS",
+    )
+    second_ingestion_id = repository.create_ingestion_run(
+        source_system="fpl_api",
+        source_type="API",
+        endpoint_or_file="fixtures/",
+        started_at="2026-10-02T11:00:00+00:00",
+        source_retrieved_at="2026-10-02T11:00:00+00:00",
+        status="FAILED",
+    )
+
+    repository.upsert_dataset_freshness(
+        dataset_name="fixtures",
+        last_successful_ingestion_id=first_ingestion_id,
+        last_attempted_ingestion_id=first_ingestion_id,
+        last_successful_refresh_at="2026-10-02T10:00:00+00:00",
+        last_attempted_refresh_at="2026-10-02T10:00:00+00:00",
+        freshness_threshold_seconds=21600,
+        freshness_status="FRESH",
+    )
+
+    repository.upsert_dataset_freshness(
+        dataset_name="fixtures",
+        last_attempted_ingestion_id=second_ingestion_id,
+        last_attempted_refresh_at="2026-10-02T11:00:00+00:00",
+        freshness_status="STALE",
+    )
+
+    row = repository.get_dataset_freshness("fixtures")
+
+    assert row is not None
+    assert row["last_successful_ingestion_id"] == first_ingestion_id
+    assert row["last_successful_refresh_at"] == "2026-10-02T10:00:00+00:00"
+    assert row["last_attempted_ingestion_id"] == second_ingestion_id
+    assert row["last_attempted_refresh_at"] == "2026-10-02T11:00:00+00:00"
+    assert row["freshness_status"] == "STALE"
