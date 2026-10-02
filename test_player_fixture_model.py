@@ -232,3 +232,42 @@ def test_projection_keeps_model_version():
     )
 
     assert result.model_version == "player_fixture_xp_v1"
+
+
+def test_projection_exposes_batch9_start_probability():
+    players = [
+        make_player(1, 1, 0.6, 0.3, starts=5),
+        make_player(2, 1, 0.4, 0.2, starts=5),
+        make_player(3, 2, 0.5, 0.4, starts=5),
+    ]
+
+    result = build_player_fixture_projection(
+        player=players[0],
+        players=players,
+        fixture=make_fixture(),
+        team_expected_goals={1: 2.0, 2: 1.0},
+        bootstrap_data={"element_types": []},
+    )
+
+    assert result.start_probability == 1.0
+    assert result.expected_minutes == 90.0
+
+
+def test_projection_respects_player_availability_probability():
+    players = [
+        make_player(1, 1, 0.6, 0.3),
+        make_player(2, 1, 0.4, 0.2),
+        make_player(3, 2, 0.5, 0.4),
+    ]
+    players[0]["chance_of_playing_this_round"] = 50
+
+    result = build_player_fixture_projection(
+        player=players[0],
+        players=players,
+        fixture=make_fixture(),
+        team_expected_goals={1: 2.0, 2: 1.0},
+        bootstrap_data={"element_types": []},
+    )
+
+    assert result.start_probability == 0.5
+    assert result.expected_minutes == 45.0

@@ -23,6 +23,7 @@ from math import exp
 from typing import Any
 
 from expected_points import ExpectedPoints, expected_points_for_fixture
+from player_minutes_model import project_player_minutes
 
 
 MODEL_VERSION = "player_fixture_xp_v1"
@@ -51,6 +52,7 @@ class PlayerFixtureProjection:
     expected_bonus: float
 
     expected_minutes: float
+    start_probability: float
     expected_points: float
 
     data_complete: bool
@@ -274,12 +276,14 @@ def build_player_fixture_projection(
     )
     warnings.extend(xa_warnings)
 
-    # Reuse the existing start-probability logic indirectly through the
-    # expected-points result. For bonus we need the same estimate, so import
-    # the public helper locally to keep the existing engine authoritative.
-    from expected_points import estimate_start_probability
+    # Batch 9: use the dedicated playing-time model rather than keeping
+    # start-probability logic hidden inside the expected-points calculator.
+    minutes_projection = project_player_minutes(player=player)
+    start_probability = minutes_projection.start_probability
+    warnings.extend(minutes_projection.warnings)
+    if not minutes_projection.data_complete:
+        complete = False
 
-    start_probability = estimate_start_probability(player)
     expected_bonus, bonus_warning = estimate_expected_bonus(
         player=player,
         start_probability=start_probability,
@@ -311,6 +315,8 @@ def build_player_fixture_projection(
         clean_sheet_probability=cs_probability,
         expected_bonus=expected_bonus,
         bootstrap_data=bootstrap_data,
+        start_probability=start_probability,
+        expected_minutes=minutes_projection.expected_minutes,
     )
 
     if not result.data_complete:
@@ -340,6 +346,7 @@ def build_player_fixture_projection(
         clean_sheet_probability=cs_probability,
         expected_bonus=expected_bonus,
         expected_minutes=result.expected_minutes,
+        start_probability=start_probability,
         expected_points=result.expected_points,
         data_complete=complete,
         warnings=tuple(dict.fromkeys(warnings)),

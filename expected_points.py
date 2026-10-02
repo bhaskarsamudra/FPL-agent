@@ -134,6 +134,8 @@ def expected_points_for_fixture(
     clean_sheet_probability: float | None = None,
     expected_bonus: float | None = None,
     bootstrap_data: dict[str, Any] | None = None,
+    start_probability: float | None = None,
+    expected_minutes: float | None = None,
 ) -> ExpectedPoints:
     """
     Calculate transparent expected points for one player/fixture.
@@ -151,11 +153,18 @@ def expected_points_for_fixture(
 
     rules = _scoring_rules(bootstrap_data, position_id)
 
-    start_probability = estimate_start_probability(player)
-    expected_minutes = 90.0 * start_probability
-
     warnings = []
     complete = True
+
+    if start_probability is None:
+        start_probability = estimate_start_probability(player)
+    else:
+        start_probability = _probability(start_probability)
+
+    if expected_minutes is None:
+        expected_minutes = 90.0 * start_probability
+    else:
+        expected_minutes = max(0.0, min(90.0, _float(expected_minutes)))
 
     xg = _float(expected_goals, 0.0)
     xa = _float(expected_assists, 0.0)
