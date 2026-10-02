@@ -158,3 +158,56 @@ class Repository(ABC):
     ) -> int:
         """Insert or update one manager chip usage record."""
         raise NotImplementedError
+
+    @abstractmethod
+    def upsert_league(
+        self,
+        fpl_league_id: int,
+        season_id: int,
+        name: str | None = None,
+        league_type: str | None = None,
+    ) -> int:
+        """Insert or update one FPL league for a season."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_league_member(
+        self,
+        league_id: int,
+        manager_id: int,
+    ) -> int:
+        """Insert or update one manager membership in one league."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_league_standing(
+        self,
+        league_id: int,
+        manager_id: int,
+        season_id: int,
+        gameweek_id: int,
+        rank: int | None = None,
+        total_points: int | None = None,
+        last_rank: int | None = None,
+        rank_change: int | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one league-specific manager standing."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def upsert_rival_squad_snapshot(
+        self,
+        league_id: int,
+        manager_id: int,
+        season_id: int,
+        gameweek_id: int,
+        player_id: int,
+        position: int | None = None,
+        is_captain: bool = False,
+        is_vice_captain: bool = False,
+        multiplier: int | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one league-specific rival squad snapshot row."""
+        raise NotImplementedError

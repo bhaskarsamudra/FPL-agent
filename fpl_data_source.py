@@ -82,11 +82,20 @@ class FPLDataSource:
         self,
         league_id: int,
         page: int = 1,
+        event: int | None = None,
     ) -> dict[str, Any]:
-        """Fetch one page of a classic league standings endpoint."""
-        return self.fetch_json(
+        """Fetch one page of a classic league standings endpoint.
+
+        ``event`` is optional so existing callers continue to retrieve the
+        latest standings. When supplied, the FPL API returns standings for
+        that Gameweek snapshot.
+        """
+        endpoint = (
             f"leagues-classic/{league_id}/standings/?page_standings={page}"
         )
+        if event is not None:
+            endpoint += f"&event={event}"
+        return self.fetch_json(endpoint)
 
     def fetch_element_summary(self, player_id: int) -> dict[str, Any]:
         """Fetch one player's history and upcoming fixtures."""

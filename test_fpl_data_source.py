@@ -49,3 +49,21 @@ def test_manager_transfers_accepts_list_payload(monkeypatch):
 
     assert len(result["transfers"]) == 1
     assert result["transfers"][0]["entry_cost"] == -4
+
+
+def test_classic_league_standings_supports_gameweek_snapshot(monkeypatch):
+    """League standings can be requested for a specific Gameweek."""
+    source = FPLDataSource(base_url="https://example.invalid")
+    calls = []
+
+    monkeypatch.setattr(
+        source,
+        "fetch_json",
+        lambda endpoint: calls.append(endpoint) or {"standings": {"results": []}},
+    )
+
+    source.fetch_classic_league_standings(987870, page=2, event=6)
+
+    assert calls == [
+        "leagues-classic/987870/standings/?page_standings=2&event=6"
+    ]

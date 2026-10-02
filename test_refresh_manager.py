@@ -896,3 +896,141 @@ def test_manager_refresh_failure_completes_ingestion_run(sqlite_repository):
     )
     assert len(runs) == 1
     assert runs[0]["status"] == "FAILED"
+
+
+# ----------------------------------------------------------------------
+# Batch 6 multi-league / rival tests
+# ----------------------------------------------------------------------
+
+
+def test_manager_refresh_supports_multiple_leagues_with_overlapping_rivals(
+    sqlite_repository,
+):
+    """The same rival can belong to multiple leagues with different ranks."""
+
+    class MultiLeagueSource(FakeFPLSource):
+        def __init__(self):
+            super().__init__()
+            self.league_calls = []
+            self.rival_pick_calls = []
+
+        def fetch_classic_league_standings(self, league_id, page=1, event=None):
+            self.league_calls.append((league_id, page, event))
+
+            standings_by_league = {
+                111: [
+                    {"id": 3325156, "player_name": "Test Manager", "entry_name": "My Team", "rank": 1, "last_rank": 2, "total": 200},
+                    {"id": 1001, "player_name": "Rival One", "entry_name": "Rival Team One", "rank": 2, "last_rank": 4, "total": 190},
+                    {"id": 1002, "player_name": "Rival Two", "entry_name": "Rival Team Two", "rank": 3, "last_rank": 3, "total": 185},
+                ],
+                222: [
+                    {"id": 3325156, "player_name": "Test Manager", "entry_name": "My Team", "rank": 10, "last_rank": 8, "total": 200},
+                    {"id": 1001, "player_name": "Rival One", "entry_name": "Rival Team One", "rank": 5, "last_rank": 7, "total": 175},
+                    {"id": 1003, "player_name": "Rival Three", "entry_name": "Rival Team Three", "rank": 2, "last_rank": 2, "total": 188},
+                ],
+            }
+            return {
+                "league": {
+                    "id": league_id,
+                    "name": f"League {league_id}",
+                    "league_type": "classic",
+                },
+                "standings": {
+                    "results": standings_by_league[league_id],
+                    "has_next": False,
+                },
+            }
+
+        def fetch_manager_picks(self, manager_id, gameweek):
+            if manager_id not in (3325156,):
+                self.rival_pick_calls.append(manager_id)
+            return super().fetch_manager_picks(manager_id, gameweek)
+
+    source = MultiLeagueSource()
+    manager = FPLRefreshManager(
+        source,
+        repository=sqlite_repository,
+        season_code="2026/27",
+    )
+
+    assert manager.refresh_global_data().status == "success"
+
+    report = manager.refresh_manager_data(
+        3325156,
+        2,
+        league_ids=[111, 222],
+    )
+
+    assert report.status == "success", report.error
+    assert report.collections["leagues"]["records_written"] == 2
+    assert report.collections["league_members"]["records_written"] == 6
+    assert report.collections["league_standings"]["records_written"] == 6
+    assert report.collections["rival_squad_snapshots"]["records_written"] == 8
+
+    # Rival 1001 is present in both leagues, but its picks are fetched once.
+    assert sorted(source.rival_pick_calls) == [1001, 1002, 1003]
+
+    leagues = sqlite_repository.fetch_all(
+        "SELECT * FROM leagues ORDER BY fpl_league_id"
+    )
+    assert [row["fpl_league_id"] for row in leagues] == [111, 222]
+
+    rival_one = sqlite_repository.fetch_one(
+        "SELECT id FROM managers WHERE fpl_manager_id = ?",
+        (1001,),
+    )
+    assert rival_one is not None
+
+    standings = sqlite_repository.fetch_all(
+        """
+        SELECT l.fpl_league_id, s.rank, s.total_points
+        FROM league_standings s
+        JOIN leagues l ON l.id = s.league_id
+        WHERE s.manager_id = ?
+        ORDER BY l.fpl_league_id
+        """,
+        (int(rival_one["id"]),),
+    )
+
+    assert [(row["fpl_league_id"], row["rank"], row["total_points"]) for row in standings] == [
+        (111, 2, 190),
+        (222, 5, 175),
+    ]
+
+    snapshot_counts = sqlite_repository.fetch_all(
+        """
+        SELECT l.fpl_league_id, COUNT(*) AS snapshot_count
+        FROM rival_squad_snapshots r
+        JOIN leagues l ON l.id = r.league_id
+        WHERE r.manager_id = ?
+        GROUP BY l.fpl_league_id
+        ORDER BY l.fpl_league_id
+        """,
+        (int(rival_one["id"]),),
+    )
+
+    assert [
+        (row["fpl_league_id"], row["snapshot_count"])
+        for row in snapshot_counts
+    ] == [(111, 2), (222, 2)]
+
+    # Repeating the refresh must not create duplicate league state.
+    second_report = manager.refresh_manager_data(
+        3325156,
+        2,
+        league_ids=[111, 222],
+    )
+    assert second_report.status == "success", second_report.error
+
+    assert sqlite_repository.fetch_one(
+        "SELECT COUNT(*) AS count FROM leagues"
+    )["count"] == 2
+    assert sqlite_repository.fetch_one(
+        "SELECT COUNT(*) AS count FROM league_members"
+    )["count"] == 6
+    assert sqlite_repository.fetch_one(
+        "SELECT COUNT(*) AS count FROM league_standings"
+    )["count"] == 6
+    assert sqlite_repository.fetch_one(
+        "SELECT COUNT(*) AS count FROM rival_squad_snapshots"
+    )["count"] == 8

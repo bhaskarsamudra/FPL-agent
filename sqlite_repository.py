@@ -1506,3 +1506,180 @@ class SQLiteRepository(Repository):
             if not self._transaction_active:
                 self.connection.rollback()
             raise RepositoryError(str(exc)) from exc
+
+    # ------------------------------------------------------------------
+    # League / rival methods
+    # ------------------------------------------------------------------
+
+    def upsert_league(
+        self,
+        fpl_league_id: int,
+        season_id: int,
+        name: str | None = None,
+        league_type: str | None = None,
+    ) -> int:
+        """Insert or update one FPL league for a season."""
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO leagues (
+                    fpl_league_id, season_id, name, league_type
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(fpl_league_id, season_id) DO UPDATE SET
+                    name = excluded.name,
+                    league_type = excluded.league_type
+                """,
+                (fpl_league_id, season_id, name, league_type),
+            )
+            row = self.connection.execute(
+                """
+                SELECT id FROM leagues
+                WHERE fpl_league_id = ? AND season_id = ?
+                """,
+                (fpl_league_id, season_id),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("League upsert succeeded but league was not found.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def upsert_league_member(
+        self,
+        league_id: int,
+        manager_id: int,
+    ) -> int:
+        """Insert or update one manager membership in one league."""
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO league_members (league_id, manager_id)
+                VALUES (?, ?)
+                ON CONFLICT(league_id, manager_id) DO NOTHING
+                """,
+                (league_id, manager_id),
+            )
+            row = self.connection.execute(
+                """
+                SELECT id FROM league_members
+                WHERE league_id = ? AND manager_id = ?
+                """,
+                (league_id, manager_id),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("League membership upsert succeeded but membership was not found.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def upsert_league_standing(
+        self,
+        league_id: int,
+        manager_id: int,
+        season_id: int,
+        gameweek_id: int,
+        rank: int | None = None,
+        total_points: int | None = None,
+        last_rank: int | None = None,
+        rank_change: int | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one league-specific manager standing."""
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO league_standings (
+                    league_id, manager_id, season_id, gameweek_id,
+                    rank, total_points, last_rank, rank_change, ingestion_run_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(league_id, season_id, gameweek_id, manager_id)
+                DO UPDATE SET
+                    rank = excluded.rank,
+                    total_points = excluded.total_points,
+                    last_rank = excluded.last_rank,
+                    rank_change = excluded.rank_change,
+                    ingestion_run_id = excluded.ingestion_run_id
+                """,
+                (
+                    league_id, manager_id, season_id, gameweek_id,
+                    rank, total_points, last_rank, rank_change, ingestion_run_id,
+                ),
+            )
+            row = self.connection.execute(
+                """
+                SELECT id FROM league_standings
+                WHERE league_id = ? AND season_id = ?
+                  AND gameweek_id = ? AND manager_id = ?
+                """,
+                (league_id, season_id, gameweek_id, manager_id),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("League standing upsert succeeded but record was not found.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+
+    def upsert_rival_squad_snapshot(
+        self,
+        league_id: int,
+        manager_id: int,
+        season_id: int,
+        gameweek_id: int,
+        player_id: int,
+        position: int | None = None,
+        is_captain: bool = False,
+        is_vice_captain: bool = False,
+        multiplier: int | None = None,
+        ingestion_run_id: int | None = None,
+    ) -> int:
+        """Insert or update one league-specific rival squad snapshot row."""
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO rival_squad_snapshots (
+                    league_id, manager_id, season_id, gameweek_id, player_id,
+                    position, is_captain, is_vice_captain, multiplier, ingestion_run_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(league_id, manager_id, season_id, gameweek_id, player_id)
+                DO UPDATE SET
+                    position = excluded.position,
+                    is_captain = excluded.is_captain,
+                    is_vice_captain = excluded.is_vice_captain,
+                    multiplier = excluded.multiplier,
+                    ingestion_run_id = excluded.ingestion_run_id
+                """,
+                (
+                    league_id, manager_id, season_id, gameweek_id, player_id,
+                    position, int(is_captain), int(is_vice_captain), multiplier,
+                    ingestion_run_id,
+                ),
+            )
+            row = self.connection.execute(
+                """
+                SELECT id FROM rival_squad_snapshots
+                WHERE league_id = ? AND manager_id = ? AND season_id = ?
+                  AND gameweek_id = ? AND player_id = ?
+                """,
+                (league_id, manager_id, season_id, gameweek_id, player_id),
+            ).fetchone()
+            if row is None:
+                raise RepositoryError("Rival squad snapshot upsert succeeded but record was not found.")
+            self._commit_if_needed()
+            return int(row["id"])
+        except sqlite3.Error as exc:
+            if not self._transaction_active:
+                self.connection.rollback()
+            raise RepositoryError(str(exc)) from exc
+

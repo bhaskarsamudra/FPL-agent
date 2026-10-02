@@ -1098,6 +1098,242 @@ class FPLRefreshManager:
             return report
 
     # ------------------------------------------------------------------
+    # League / rival refresh helpers
+    # ------------------------------------------------------------------
+
+    def _refresh_leagues_sqlite(
+        self,
+        manager_id: int,
+        gameweek: int,
+        league_ids: list[int],
+        season_id: int,
+        gameweek_id: int,
+        primary_manager_db_id: int,
+        primary_manager_picks: dict[str, Any],
+    ) -> dict[str, int]:
+        """
+        Refresh one manager's configured leagues for one Gameweek.
+
+        League membership, standings and rival squads are deliberately
+        stored with the league ID in their uniqueness keys. Therefore the
+        same FPL manager can appear in multiple leagues with different
+        standings while remaining one manager entity in the database.
+
+        Manager picks are cached by FPL manager ID during this refresh so
+        an overlapping rival appearing in multiple leagues is fetched only
+        once from the FPL API.
+        """
+
+        unique_league_ids = list(dict.fromkeys(int(value) for value in league_ids))
+        if not unique_league_ids:
+            return {
+                "leagues": 0,
+                "league_members": 0,
+                "league_standings": 0,
+                "rival_squad_snapshots": 0,
+            }
+
+        started_at = _timestamp()
+        ingestion_run_id = self.repository.create_ingestion_run(
+            source_system=self.SOURCE_NAME,
+            source_type="API",
+            endpoint_or_file=";".join(
+                f"leagues-classic/{league_id}/standings/"
+                for league_id in unique_league_ids
+            ),
+            started_at=started_at,
+            source_retrieved_at=started_at,
+            status="RUNNING",
+        )
+
+        counts = {
+            "leagues": 0,
+            "league_members": 0,
+            "league_standings": 0,
+            "rival_squad_snapshots": 0,
+        }
+
+        # One in-memory cache covers all leagues in this refresh.
+        picks_cache: dict[int, dict[str, Any]] = {
+            int(manager_id): primary_manager_picks
+        }
+
+        try:
+            for league_id in unique_league_ids:
+                # ------------------------------------------------------
+                # Retrieve every standings page for this league.
+                # ------------------------------------------------------
+                page = 1
+                standings_rows: list[dict[str, Any]] = []
+                league_meta: dict[str, Any] = {}
+
+                while True:
+                    payload = self.data_source.fetch_classic_league_standings(
+                        league_id,
+                        page=page,
+                        event=gameweek,
+                    )
+                    if page == 1:
+                        league_meta = payload.get("league", {})
+
+                    page_rows = payload.get("standings", {}).get("results", [])
+                    if not isinstance(page_rows, list):
+                        raise ValueError(
+                            f"League {league_id} standings results are not a list."
+                        )
+                    standings_rows.extend(page_rows)
+
+                    if not payload.get("standings", {}).get("has_next", False):
+                        break
+                    page += 1
+
+                league_db_id = self.repository.upsert_league(
+                    fpl_league_id=league_id,
+                    season_id=season_id,
+                    name=league_meta.get("name"),
+                    league_type=league_meta.get("league_type") or "classic",
+                )
+                counts["leagues"] += 1
+
+                # ------------------------------------------------------
+                # Persist membership and league-specific standings.
+                # ------------------------------------------------------
+                for standing in standings_rows:
+                    fpl_rival_id = _as_int(standing.get("id"))
+                    if fpl_rival_id is None:
+                        raise ValueError(
+                            f"League {league_id} contains a standing without a manager ID."
+                        )
+
+                    if fpl_rival_id == manager_id:
+                        rival_db_id = primary_manager_db_id
+                    else:
+                        # A manager in a league needs a manager entity even
+                        # if that manager is not one of the application's
+                        # configured users. Reusing the FPL ID keeps the
+                        # manager unique across all leagues.
+                        user_id = self.repository.upsert_user(
+                            external_user_key=str(fpl_rival_id),
+                            display_name=standing.get("player_name"),
+                        )
+                        rival_db_id = self.repository.upsert_manager(
+                            user_id=user_id,
+                            fpl_manager_id=fpl_rival_id,
+                            manager_name=standing.get("player_name"),
+                            team_name=standing.get("entry_name"),
+                        )
+
+                    self.repository.upsert_league_member(
+                        league_id=league_db_id,
+                        manager_id=rival_db_id,
+                    )
+                    counts["league_members"] += 1
+
+                    rank = _as_int(standing.get("rank"))
+                    last_rank = _as_int(standing.get("last_rank"))
+                    rank_change = None
+                    if rank is not None and last_rank is not None:
+                        rank_change = last_rank - rank
+
+                    self.repository.upsert_league_standing(
+                        league_id=league_db_id,
+                        manager_id=rival_db_id,
+                        season_id=season_id,
+                        gameweek_id=gameweek_id,
+                        rank=rank,
+                        total_points=_as_int(standing.get("total")),
+                        last_rank=last_rank,
+                        rank_change=rank_change,
+                        ingestion_run_id=ingestion_run_id,
+                    )
+                    counts["league_standings"] += 1
+
+                # ------------------------------------------------------
+                # Persist squad snapshots for rivals only.
+                # ------------------------------------------------------
+                for standing in standings_rows:
+                    fpl_rival_id = _as_int(standing.get("id"))
+                    if fpl_rival_id is None or fpl_rival_id == manager_id:
+                        continue
+
+                    if fpl_rival_id not in picks_cache:
+                        picks_cache[fpl_rival_id] = self.data_source.fetch_manager_picks(
+                            fpl_rival_id,
+                            gameweek,
+                        )
+
+                    rival_picks = picks_cache[fpl_rival_id]
+                    for pick in rival_picks.get("picks", []):
+                        fpl_player_id = _as_int(pick.get("element"))
+                        if fpl_player_id is None:
+                            raise ValueError(
+                                f"Manager {fpl_rival_id} has a pick without a player ID."
+                            )
+
+                        player = self.repository.fetch_one(
+                            "SELECT id FROM players WHERE fpl_player_id = ?",
+                            (fpl_player_id,),
+                        )
+                        if player is None:
+                            raise ValueError(
+                                f"Player {fpl_player_id} from rival manager {fpl_rival_id} "
+                                "is not present in SQLite. Run the global refresh first."
+                            )
+
+                        # Find the internal manager ID already created above.
+                        rival_user_id = self.repository.upsert_user(
+                            external_user_key=str(fpl_rival_id),
+                            display_name=standing.get("player_name"),
+                        )
+                        rival_db_id = self.repository.upsert_manager(
+                            user_id=rival_user_id,
+                            fpl_manager_id=fpl_rival_id,
+                            manager_name=standing.get("player_name"),
+                            team_name=standing.get("entry_name"),
+                        )
+
+                        self.repository.upsert_rival_squad_snapshot(
+                            league_id=league_db_id,
+                            manager_id=rival_db_id,
+                            season_id=season_id,
+                            gameweek_id=gameweek_id,
+                            player_id=int(player["id"]),
+                            position=_as_int(pick.get("position")),
+                            is_captain=bool(pick.get("is_captain")),
+                            is_vice_captain=bool(pick.get("is_vice_captain")),
+                            multiplier=_as_int(pick.get("multiplier")),
+                            ingestion_run_id=ingestion_run_id,
+                        )
+                        counts["rival_squad_snapshots"] += 1
+
+            self.repository.complete_ingestion_run(
+                ingestion_run_id=ingestion_run_id,
+                status="SUCCESS",
+                completed_at=_timestamp(),
+                records_received=(
+                    counts["league_standings"]
+                    + counts["rival_squad_snapshots"]
+                ),
+                records_written=sum(counts.values()),
+                records_rejected=0,
+                validation_status="PASS",
+            )
+            return counts
+
+        except Exception as exc:
+            self.repository.complete_ingestion_run(
+                ingestion_run_id=ingestion_run_id,
+                status="FAILED",
+                completed_at=_timestamp(),
+                records_received=0,
+                records_written=0,
+                records_rejected=0,
+                validation_status="FAIL",
+                error_message=str(exc),
+            )
+            raise
+
+    # ------------------------------------------------------------------
     # Existing manager refresh
     # ------------------------------------------------------------------
 
@@ -1105,12 +1341,13 @@ class FPLRefreshManager:
         self,
         manager_id: int,
         gameweek: int,
+        league_ids: list[int] | None = None,
     ) -> RefreshReport:
         """
-        Refresh one manager's official state.
+        Refresh one manager's official state and, optionally, leagues.
 
-        JSON mode retains the existing manager persistence contract.
-        SQLite mode persists the canonical user/manager state tables.
+        ``league_ids`` is intentionally a list so one manager can belong to
+        any number of configured leagues. There is no hard-coded league ID.
         """
 
         if self.store is None and self.repository is None:
@@ -1200,13 +1437,11 @@ class FPLRefreshManager:
                 rank=_as_int(entry_history.get("rank")),
                 bank=(
                     _as_int(entry_history.get("bank")) / 10.0
-                    if entry_history.get("bank") is not None
-                    else None
+                    if entry_history.get("bank") is not None else None
                 ),
                 team_value=(
                     _as_int(entry_history.get("value")) / 10.0
-                    if entry_history.get("value") is not None
-                    else None
+                    if entry_history.get("value") is not None else None
                 ),
                 event_transfers=_as_int(entry_history.get("event_transfers")),
                 event_transfers_cost=_as_int(entry_history.get("event_transfers_cost")),
@@ -1240,8 +1475,7 @@ class FPLRefreshManager:
                     is_vice_captain=bool(pick.get("is_vice_captain")),
                     purchase_price=(
                         _as_int(pick.get("purchase_price")) / 10.0
-                        if pick.get("purchase_price") is not None
-                        else None
+                        if pick.get("purchase_price") is not None else None
                     ),
                     ingestion_run_id=ingestion_run_id,
                 )
@@ -1307,6 +1541,23 @@ class FPLRefreshManager:
                 )
                 chip_count += 1
 
+            league_counts = {
+                "leagues": 0,
+                "league_members": 0,
+                "league_standings": 0,
+                "rival_squad_snapshots": 0,
+            }
+            if league_ids:
+                league_counts = self._refresh_leagues_sqlite(
+                    manager_id=manager_id,
+                    gameweek=gameweek,
+                    league_ids=league_ids,
+                    season_id=season_id,
+                    gameweek_id=gameweek_id,
+                    primary_manager_db_id=manager_db_id,
+                    primary_manager_picks=picks,
+                )
+
             self.repository.complete_ingestion_run(
                 ingestion_run_id=ingestion_run_id,
                 status="SUCCESS",
@@ -1321,14 +1572,20 @@ class FPLRefreshManager:
                 validation_status="PASS",
             )
 
+            collections = {
+                "manager": {"records_written": 1},
+                "manager_picks": {"records_written": pick_count},
+                "manager_transfers": {"records_written": transfer_count},
+                "manager_chips": {"records_written": chip_count},
+            }
+            collections.update({
+                key: {"records_written": value}
+                for key, value in league_counts.items()
+                if value
+            })
+
             return RefreshReport(
-                self.SOURCE_NAME, started_at, _timestamp(), "success",
-                {
-                    "manager": {"records_written": 1},
-                    "manager_picks": {"records_written": pick_count},
-                    "manager_transfers": {"records_written": transfer_count},
-                    "manager_chips": {"records_written": chip_count},
-                },
+                self.SOURCE_NAME, started_at, _timestamp(), "success", collections,
             )
 
         except Exception as exc:
@@ -1345,8 +1602,6 @@ class FPLRefreshManager:
                         error_message=str(exc),
                     )
                 except Exception:
-                    # Preserve the original refresh error if provenance
-                    # completion itself cannot be persisted.
                     pass
             return RefreshReport(
                 self.SOURCE_NAME, started_at, _timestamp(), "failed", {}, str(exc)
@@ -1360,6 +1615,7 @@ class FPLRefreshManager:
         self,
         manager_id: int | None = None,
         gameweek: int | None = None,
+        league_ids: list[int] | None = None,
     ) -> RefreshReport:
         """
         Run the current explicit refresh policy.
@@ -1372,6 +1628,7 @@ class FPLRefreshManager:
             return self.refresh_manager_data(
                 manager_id,
                 gameweek,
+                league_ids=league_ids,
             )
 
         return self.refresh_global_data()
