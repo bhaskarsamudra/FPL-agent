@@ -804,6 +804,101 @@ def test_global_refresh_rolls_back_partial_sqlite_persistence(
         failing_repository.close()
 
 
+def test_failed_refresh_preserves_previous_successful_state(tmp_path):
+    """A failed refresh must preserve the last known-good state and freshness lineage."""
+
+    class FailOnSecondRefreshRepository(SQLiteRepository):
+        def __init__(self, db_path):
+            initialize_database(db_path)
+            super().__init__(db_path)
+            self.refresh_count = 0
+
+        def upsert_current_player_gameweek_stats(self, *args, **kwargs):
+            if self.refresh_count == 1:
+                raise RuntimeError(
+                    "simulated second-refresh persistence failure"
+                )
+            return super().upsert_current_player_gameweek_stats(
+                *args,
+                **kwargs,
+            )
+
+    repository = FailOnSecondRefreshRepository(tmp_path / "fpl.db")
+
+    try:
+        manager = FPLRefreshManager(
+            FakeFPLSource(),
+            repository=repository,
+        )
+
+        first_report = manager.refresh_global_data()
+        assert first_report.status == "success", first_report.error
+
+        successful_run = repository.fetch_one(
+            "SELECT * FROM ingestion_runs ORDER BY id DESC LIMIT 1"
+        )
+        assert successful_run is not None
+        successful_run_id = successful_run["id"]
+
+        before_counts = {}
+        for table in (
+            "seasons",
+            "gameweeks",
+            "teams",
+            "team_snapshots",
+            "players",
+            "player_snapshots",
+            "fixtures",
+            "current_player_gameweek_stats",
+        ):
+            before_counts[table] = repository.fetch_one(
+                f"SELECT COUNT(*) AS count FROM {table}"
+            )["count"]
+
+        successful_freshness = {
+            dataset_name: repository.get_dataset_freshness(dataset_name)
+            for dataset_name in ("bootstrap_static", "fixtures")
+        }
+
+        # The next refresh must fail after making partial canonical writes.
+        repository.refresh_count = 1
+        second_report = manager.refresh_global_data()
+
+        assert second_report.status == "failed"
+        assert "simulated second-refresh persistence failure" in second_report.error
+
+        # The previous successful canonical state must remain intact.
+        for table, expected_count in before_counts.items():
+            assert repository.fetch_one(
+                f"SELECT COUNT(*) AS count FROM {table}"
+            )["count"] == expected_count
+
+        ingestion_runs = repository.fetch_all(
+            "SELECT id, status FROM ingestion_runs ORDER BY id"
+        )
+        assert [row["status"] for row in ingestion_runs] == [
+            "SUCCESS",
+            "FAILED",
+        ]
+
+        failed_run_id = ingestion_runs[-1]["id"]
+        assert failed_run_id != successful_run_id
+
+        # Last successful lineage remains the first run, while the latest
+        # attempt is the failed run and the dataset is no longer fresh.
+        for dataset_name, previous in successful_freshness.items():
+            current = repository.get_dataset_freshness(dataset_name)
+            assert current is not None
+            assert current["last_successful_ingestion_id"] == successful_run_id
+            assert current["last_successful_refresh_at"] == previous[
+                "last_successful_refresh_at"
+            ]
+            assert current["last_attempted_ingestion_id"] == failed_run_id
+            assert current["freshness_status"] == "STALE"
+    finally:
+        repository.close()
+
+
 def test_global_refresh_recovers_after_atomic_persistence_failure(
     tmp_path,
 ):
