@@ -39,6 +39,7 @@ from multi_gw_strategy import MultiGWStrategicPlan, evaluate_multi_gw_options
 from strategy_scenario_engine import CrossHorizonStrategyPlan, evaluate_cross_horizon_strategies
 from strategy_scenario import StrategyScenario
 from strategy_scenario_generator import generate_strategy_scenarios_from_options
+from strategy_scenario_evaluator import StrategyScenarioEvaluationPlan, evaluate_strategy_scenarios
 from transfer_engine import TransferCandidate, generate_transfer_candidates
 
 
@@ -124,6 +125,7 @@ class StrategicDecision:
     projection_model_version: str | None = None
     cross_horizon_strategy: CrossHorizonStrategyPlan | None = None
     strategy_scenarios: tuple[StrategyScenario, ...] = ()
+    strategy_scenario_plan: StrategyScenarioEvaluationPlan | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -372,6 +374,11 @@ def build_strategic_decision(
         free_transfers_before=int(manager_state.free_transfers),
     )
 
+    strategy_scenario_plan = evaluate_strategy_scenarios(
+        scenarios=scenario_generation.scenarios,
+        cross_horizon_plan=cross_horizon_strategy,
+    )
+
     if cross_horizon_strategy.selected_option_id is not None:
         selected = next(
             (
@@ -410,6 +417,7 @@ def build_strategic_decision(
         dream_team_selection_policy=DREAM_TEAM_SELECTION_POLICY,
         cross_horizon_strategy=cross_horizon_strategy,
         strategy_scenarios=scenario_generation.scenarios,
+        strategy_scenario_plan=strategy_scenario_plan,
     )
 
 def build_strategic_decision_from_production_projection(
@@ -482,4 +490,5 @@ def build_strategic_decision_from_production_projection(
         projection_model_version=projection_result.model_version,
         cross_horizon_strategy=decision.cross_horizon_strategy,
         strategy_scenarios=decision.strategy_scenarios,
+        strategy_scenario_plan=decision.strategy_scenario_plan,
     )

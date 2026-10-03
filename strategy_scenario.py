@@ -65,6 +65,7 @@ class StrategyScenario:
     hit_cost: float
     remaining_transfer_flexibility: int
     data_complete: bool
+    source_option_id: str | None = None
     warnings: tuple[str, ...] = ()
     model_version: str = MODEL_VERSION
 

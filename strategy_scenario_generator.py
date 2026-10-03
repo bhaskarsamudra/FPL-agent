@@ -218,6 +218,7 @@ def generate_strategy_scenarios(
                     f"{action.description} with future reassessment points across "
                     f"the supplied planning horizon."
                 ),
+                source_option_id=str(getattr(option, "option_id", action.action_type)),
                 decision_gameweek=decision_gw,
                 target_gameweek=target_gw,
                 horizon_gameweeks=horizon,

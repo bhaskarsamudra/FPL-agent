@@ -70,6 +70,9 @@ def test_orchestrator_exposes_cross_horizon_strategy_for_eight_gw_input():
     plan = result.cross_horizon_strategy
     assert plan.data_complete
     assert plan.selected_option_id == result.selected_option.option_id
+    assert result.strategy_scenario_plan is not None
+    assert result.strategy_scenario_plan.selected_scenario_id is not None
+    assert result.strategy_scenario_plan.selected_scenario_id.endswith(result.selected_option.option_id)
     assert dict(plan.horizons)["short"] == (6, 7, 8)
     assert dict(plan.horizons)["medium"] == (6, 7, 8, 9, 10)
     assert dict(plan.horizons)["long"] == (6, 7, 8, 9, 10, 11, 12, 13)
