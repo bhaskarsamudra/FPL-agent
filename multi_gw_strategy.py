@@ -1,20 +1,14 @@
 """
 multi_gw_strategy.py
 
-Batch 16 multi-Gameweek strategic decision framework.
+Bounded multi-Gameweek strategic decision framework.
 
-This module evaluates a bounded set of already-generated strategic options
-across a common future horizon. It does not generate every possible squad or
-chip combination. Its purpose is to make the trade-offs explicit:
+Captaincy is part of the common horizon evaluation. The captain engine remains
+the single source of captaincy intelligence; this module only incorporates its
+point-in-time output into option scoring.
 
-- projected points over the full horizon;
-- immediate Gameweek contribution;
-- transfer cost / hit cost;
-- retained free-transfer flexibility;
-- opportunity cost versus the strongest alternative.
-
-Dream Team data is deliberately absent from this module. The Strategist must
-make an independent decision before the Gameweek; Dream Team data belongs to
+Dream Team data is deliberately absent. The Strategist must make an
+independent decision before the Gameweek; Dream Team data belongs to
 post-Gameweek evaluation and learning.
 """
 
@@ -23,8 +17,10 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
+from captain_engine import CaptaincyHorizonContext
 
-ENGINE_VERSION = "multi_gw_strategy_v1_0"
+
+ENGINE_VERSION = "multi_gw_strategy_v1_1"
 
 
 @dataclass(frozen=True)
@@ -37,6 +33,8 @@ class MultiGWOptionEvaluation:
     horizon_end_gameweek: int
     projected_horizon_points: float
     projected_first_gameweek_points: float
+    captaincy_projected_points: float
+    projected_total_points: float
     transfer_hit_cost: float
     retained_free_transfer_value: float
     strategic_score: float
@@ -56,6 +54,7 @@ class MultiGWStrategicPlan:
     horizon_gameweeks: tuple[int, ...]
     selected_option_id: str | None
     options: tuple[MultiGWOptionEvaluation, ...]
+    captaincy_context: CaptaincyHorizonContext | None = None
     engine_version: str = ENGINE_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,8 +87,6 @@ def _first_gameweek_points(
                 sell_row, horizon_start
             )
 
-    # Roll/chip options already carry a complete horizon projection. For the
-    # first GW, use an explicit fixture-level projection when available.
     return _number(getattr(option, "projected_first_gameweek_points", 0.0))
 
 
@@ -105,6 +102,37 @@ def _player_gw_points(row: dict[str, Any], gameweek: int) -> float:
     return total if found else 0.0
 
 
+def _captaincy_points(
+    *,
+    option: Any,
+    captaincy_context: CaptaincyHorizonContext | None,
+    horizon_gameweeks: Sequence[int],
+) -> tuple[float, tuple[str, ...]]:
+    """Return normal captain bonus supplied by the captain engine.
+
+    Chip counterfactuals are already scenario-evaluated and therefore include
+    their own captain mechanics. Triple Captain must never receive a second
+    captain bonus here.
+    """
+    if captaincy_context is None or getattr(option, "option_type", None) == "chip":
+        return 0.0, ()
+
+    total = 0.0
+    warnings: list[str] = []
+    for gameweek in horizon_gameweeks:
+        opportunity = captaincy_context.for_gameweek(gameweek)
+        if opportunity is None or opportunity.best_player_id is None:
+            warnings.append(f"No captaincy context is available for GW{gameweek}.")
+            continue
+        total += opportunity.best_expected_points * (
+            captaincy_context.captain_multiplier - 1.0
+        )
+        if not opportunity.data_complete:
+            warnings.extend(opportunity.warnings)
+
+    return total, tuple(dict.fromkeys(warnings))
+
+
 def evaluate_multi_gw_options(
     *,
     decision_gameweek: int,
@@ -114,12 +142,14 @@ def evaluate_multi_gw_options(
     free_transfers_before: int,
     transfer_hit_points: float = 4.0,
     retained_ft_value: float = 0.5,
+    captaincy_context: CaptaincyHorizonContext | None = None,
 ) -> MultiGWStrategicPlan:
     """Evaluate bounded strategic options on one common multi-GW horizon.
 
-    ``retained_ft_value`` is deliberately a small transparent heuristic, not a
-    learned probability. It represents the value of preserving one future
-    transfer opportunity when rolling instead of using a transfer now.
+    ``captaincy_context`` comes directly from ``captain_engine``. It adds the
+    normal captain multiplier bonus to non-chip options. Chip counterfactuals
+    already contain their own captain mechanics and are therefore not adjusted
+    again.
     """
 
     horizon = tuple(int(gw) for gw in horizon_gameweeks)
@@ -145,6 +175,13 @@ def evaluate_multi_gw_options(
             horizon_start=first_gw,
         )
 
+        captain_points, captain_warnings = _captaincy_points(
+            option=option,
+            captaincy_context=captaincy_context,
+            horizon_gameweeks=horizon,
+        )
+        warnings.extend(captain_warnings)
+
         transfer_hit = 0.0
         if option_type == "transfer" and free_transfers_before < 1:
             transfer_hit = transfer_hit_points
@@ -152,13 +189,9 @@ def evaluate_multi_gw_options(
                 f"No free transfer available; a {transfer_hit_points:.1f}-point hit applies."
             )
 
-        # A normal transfer consumes this week's transfer opportunity. Rolling
-        # preserves it. Chip usage does not automatically imply that a future
-        # free transfer is lost, so only roll receives the explicit flexibility
-        # credit here.
         flexibility = retained_ft_value if option_type == "roll" else 0.0
-
-        strategic_score = projected - transfer_hit + flexibility
+        projected_total = projected + captain_points
+        strategic_score = projected_total - transfer_hit + flexibility
 
         evaluated.append(
             MultiGWOptionEvaluation(
@@ -168,6 +201,8 @@ def evaluate_multi_gw_options(
                 horizon_end_gameweek=last_gw,
                 projected_horizon_points=projected,
                 projected_first_gameweek_points=first_points,
+                captaincy_projected_points=captain_points,
+                projected_total_points=projected_total,
                 transfer_hit_cost=transfer_hit,
                 retained_free_transfer_value=flexibility,
                 strategic_score=strategic_score,
@@ -177,26 +212,28 @@ def evaluate_multi_gw_options(
             )
         )
 
-    complete = [row for row in evaluated if row.data_complete]
-    best_score = max((row.strategic_score for row in complete), default=None)
+    complete_options = [row for row in evaluated if row.data_complete]
+    best_score = max((row.strategic_score for row in complete_options), default=None)
     selected_id = None
 
     if best_score is not None:
         selected = max(
-            complete,
-            key=lambda row: (row.strategic_score, row.projected_horizon_points, row.option_id),
+            complete_options,
+            key=lambda row: (
+                row.strategic_score,
+                row.projected_total_points,
+                row.option_id,
+            ),
         )
         selected_id = selected.option_id
 
-    # Opportunity cost is measured only against other complete options on the
-    # same horizon. This makes the trade-off auditable without inventing a
-    # counterfactual outside the bounded candidate set.
     final: list[MultiGWOptionEvaluation] = []
     for row in evaluated:
-        if row.data_complete and best_score is not None:
-            opportunity = max(0.0, best_score - row.strategic_score)
-        else:
-            opportunity = 0.0
+        opportunity = (
+            max(0.0, best_score - row.strategic_score)
+            if row.data_complete and best_score is not None
+            else 0.0
+        )
         final.append(
             MultiGWOptionEvaluation(
                 option_id=row.option_id,
@@ -205,6 +242,8 @@ def evaluate_multi_gw_options(
                 horizon_end_gameweek=row.horizon_end_gameweek,
                 projected_horizon_points=row.projected_horizon_points,
                 projected_first_gameweek_points=row.projected_first_gameweek_points,
+                captaincy_projected_points=row.captaincy_projected_points,
+                projected_total_points=row.projected_total_points,
                 transfer_hit_cost=row.transfer_hit_cost,
                 retained_free_transfer_value=row.retained_free_transfer_value,
                 strategic_score=row.strategic_score,
@@ -219,4 +258,5 @@ def evaluate_multi_gw_options(
         horizon_gameweeks=horizon,
         selected_option_id=selected_id,
         options=tuple(final),
+        captaincy_context=captaincy_context,
     )

@@ -24,7 +24,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
-from captain_engine import CaptainCandidate, rank_captain_candidates
+from captain_engine import (
+    CaptainCandidate,
+    CaptaincyHorizonContext,
+    build_captaincy_horizon,
+    rank_captain_candidates,
+)
 from chip_engine import ChipScenarioEvaluation
 from dream_team_engine import DreamTeamGap, DreamTeamSnapshot
 from rival_engine import RivalSnapshot, identify_nearest_rivals
@@ -32,7 +37,7 @@ from multi_gw_strategy import MultiGWStrategicPlan, evaluate_multi_gw_options
 from transfer_engine import TransferCandidate, generate_transfer_candidates
 
 
-ENGINE_VERSION = "strategy_orchestrator_v1_1"
+ENGINE_VERSION = "strategy_orchestrator_v1_2"
 
 # Architectural invariant: Dream Team data is benchmark/learning context only.
 # It must never become a player-selection input for the Strategist.
@@ -101,6 +106,7 @@ class StrategicDecision:
     options: tuple[StrategicDecisionOption, ...]
     transfer_candidates: tuple[TransferCandidate, ...]
     captain_candidates: tuple[CaptainCandidate, ...]
+    captaincy_horizon: CaptaincyHorizonContext | None
     chip_opportunities: tuple[ChipScenarioEvaluation, ...]
     multi_gw_plan: MultiGWStrategicPlan | None
     rival_context: RivalDecisionContext | None
@@ -243,6 +249,11 @@ def build_strategic_decision(
         )
     )
     captains = _top_captain(squad, projections, target_gameweek)
+    captaincy_horizon = build_captaincy_horizon(
+        squad=squad,
+        projections=projections,
+        horizon_gameweeks=horizon_gameweeks or (target_gameweek,),
+    )
     chips = tuple(chip_evaluations)
 
     baseline = sum(
@@ -323,6 +334,7 @@ def build_strategic_decision(
         options=options,
         projections=projections,
         free_transfers_before=int(manager_state.free_transfers),
+        captaincy_context=captaincy_horizon,
     )
     selected_option_id = multi_gw_plan.selected_option_id
     selected = next(
@@ -334,6 +346,8 @@ def build_strategic_decision(
         warnings.append("No complete strategic option was available for selection.")
     if not captains:
         warnings.append("No target-Gameweek captain candidate was available.")
+    if captaincy_horizon.warnings:
+        warnings.extend(captaincy_horizon.warnings)
     if not projections:
         warnings.append("No projections were supplied.")
 
@@ -346,6 +360,7 @@ def build_strategic_decision(
         options=tuple(options),
         transfer_candidates=transfers,
         captain_candidates=captains,
+        captaincy_horizon=captaincy_horizon,
         chip_opportunities=chips,
         multi_gw_plan=multi_gw_plan,
         rival_context=rival_context,

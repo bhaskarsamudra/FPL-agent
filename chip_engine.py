@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Mapping, Sequence
 
+from captain_engine import CaptaincyHorizonContext
 from fpl_rules import ChipInstanceRule, FPLRules, FALLBACK_2026_27_RULES
 from scenario_engine import Scenario, ScenarioResult, evaluate_scenario
 
@@ -121,6 +122,7 @@ def build_chip_scenario(
     bench_player_ids: Sequence[int] = (),
     captain_player_id: int | None = None,
     captain_multiplier: float | None = None,
+    captaincy_context: CaptaincyHorizonContext | None = None,
 ) -> Scenario:
     """Build the atomic counterfactual scenario for a chip.
 
@@ -144,12 +146,23 @@ def build_chip_scenario(
     )
 
     if chip == "3xc":
+        if captain_player_id is None and captaincy_context is not None:
+            opportunity = captaincy_context.for_gameweek(target_gameweek)
+            captain_player_id = opportunity.best_player_id if opportunity else None
+
         if captain_player_id is None:
-            raise ValueError("captain_player_id is required for Triple Captain")
+            raise ValueError(
+                "captain_player_id is required for Triple Captain when no captaincy context is supplied"
+            )
+
         scenario = scenario.with_captain(
             target_gameweek,
             captain_player_id,
-            captain_multiplier if captain_multiplier is not None else 3.0,
+            captain_multiplier if captain_multiplier is not None else (
+                captaincy_context.triple_captain_multiplier
+                if captaincy_context is not None
+                else 3.0
+            ),
         )
 
     elif chip == "bboost":
