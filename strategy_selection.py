@@ -78,6 +78,7 @@ class StrategyTradeoff:
     scenario_ids: tuple[str, ...]
     data_complete: bool = True
     warnings: tuple[str, ...] = ()
+    selection_rationale: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -98,6 +99,7 @@ class StrategySelection:
     tradeoff_policy_version: str = TRADEOFF_POLICY_VERSION
     data_complete: bool = True
     warnings: tuple[str, ...] = ()
+    selection_rationale: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
