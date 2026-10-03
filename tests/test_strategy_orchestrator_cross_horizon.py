@@ -73,3 +73,50 @@ def test_orchestrator_exposes_cross_horizon_strategy_for_eight_gw_input():
     assert dict(plan.horizons)["short"] == (6, 7, 8)
     assert dict(plan.horizons)["medium"] == (6, 7, 8, 9, 10)
     assert dict(plan.horizons)["long"] == (6, 7, 8, 9, 10, 11, 12, 13)
+
+
+
+def test_orchestrator_exposes_current_strategy_scenarios_without_future_transfer_claims():
+    result = build_strategic_decision(
+        manager_state=_state(),
+        market_players=[
+            {"id": 100, "name": "Target", "position_id": 3, "price": 60}
+        ],
+        projections=_projections(),
+        horizon_gameweeks=list(range(6, 14)),
+    )
+
+    assert result.strategy_scenarios
+    assert {item.initial_action.action_type for item in result.strategy_scenarios} == {
+        "roll", "transfer"
+    }
+    for scenario in result.strategy_scenarios:
+        assert scenario.target_gameweek == 6
+        assert scenario.horizon_gameweeks == tuple(range(6, 14))
+        assert tuple(point.gameweek for point in scenario.future_decision_points) == tuple(range(7, 14))
+        assert all(point.action.action_type == "reassess" for point in scenario.future_decision_points)
+
+
+def test_orchestrator_does_not_turn_chip_options_into_future_transfer_scenarios():
+    projections = _projections()
+    chip = SimpleNamespace(
+        chip_instance_id="3xc_1",
+        chip="3xc",
+        target_gameweek=6,
+        horizon_start_gameweek=6,
+        horizon_end_gameweek=6,
+        data_complete=True,
+        incremental_value=10.0,
+        chip_projected_points=100.0,
+        warnings=(),
+    )
+    result = build_strategic_decision(
+        manager_state=_state(),
+        market_players=[{"id": 100, "name": "Target", "position_id": 3, "price": 60}],
+        projections=projections,
+        horizon_gameweeks=[6],
+        chip_evaluations=[chip],
+    )
+
+    assert any(option.option_type == "chip" for option in result.options)
+    assert all(scenario.initial_action.action_type in {"roll", "transfer"} for scenario in result.strategy_scenarios)

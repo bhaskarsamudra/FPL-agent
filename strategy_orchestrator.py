@@ -37,6 +37,8 @@ from dream_team_engine import DreamTeamGap, DreamTeamSnapshot
 from rival_engine import RivalSnapshot, identify_nearest_rivals
 from multi_gw_strategy import MultiGWStrategicPlan, evaluate_multi_gw_options
 from strategy_scenario_engine import CrossHorizonStrategyPlan, evaluate_cross_horizon_strategies
+from strategy_scenario import StrategyScenario
+from strategy_scenario_generator import generate_strategy_scenarios_from_options
 from transfer_engine import TransferCandidate, generate_transfer_candidates
 
 
@@ -121,6 +123,7 @@ class StrategicDecision:
     engine_version: str = ENGINE_VERSION
     projection_model_version: str | None = None
     cross_horizon_strategy: CrossHorizonStrategyPlan | None = None
+    strategy_scenarios: tuple[StrategyScenario, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -348,6 +351,14 @@ def build_strategic_decision(
         None,
     )
 
+    scenario_generation = generate_strategy_scenarios_from_options(
+        decision_gameweek=decision_gameweek,
+        target_gameweek=target_gameweek,
+        horizon_gameweeks=tuple(int(gw) for gw in (horizon_gameweeks or (target_gameweek,))),
+        options=options,
+        free_transfers_before=int(manager_state.free_transfers),
+    )
+
     cross_horizon_strategy = evaluate_cross_horizon_strategies(
         decision_gameweek=decision_gameweek,
         target_gameweek=target_gameweek,
@@ -398,6 +409,7 @@ def build_strategic_decision(
         warnings=tuple(dict.fromkeys(warnings)),
         dream_team_selection_policy=DREAM_TEAM_SELECTION_POLICY,
         cross_horizon_strategy=cross_horizon_strategy,
+        strategy_scenarios=scenario_generation.scenarios,
     )
 
 def build_strategic_decision_from_production_projection(
@@ -469,4 +481,5 @@ def build_strategic_decision_from_production_projection(
         engine_version=PRODUCTION_PROJECTION_ENGINE_VERSION,
         projection_model_version=projection_result.model_version,
         cross_horizon_strategy=decision.cross_horizon_strategy,
+        strategy_scenarios=decision.strategy_scenarios,
     )
