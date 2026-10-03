@@ -668,425 +668,434 @@ class FPLRefreshManager:
             )
 
             # ----------------------------------------------------------
-            # Basic source validation.
-            # ----------------------------------------------------------
-
-            elements = bootstrap.get("elements", [])
-            teams = bootstrap.get("teams", [])
-            events = bootstrap.get("events", [])
-            element_types = bootstrap.get("element_types", [])
-
-            if not isinstance(elements, list):
-                raise ValueError(
-                    "FPL bootstrap 'elements' is not a list."
-                )
-
-            if not isinstance(teams, list):
-                raise ValueError(
-                    "FPL bootstrap 'teams' is not a list."
-                )
-
-            if not isinstance(events, list):
-                raise ValueError(
-                    "FPL bootstrap 'events' is not a list."
-                )
-
-            if not isinstance(element_types, list):
-                raise ValueError(
-                    "FPL bootstrap 'element_types' is not a list."
-                )
-
-            if not isinstance(fixtures, list):
-                raise ValueError(
-                    "FPL fixtures payload is not a list."
-                )
-
-            # ----------------------------------------------------------
-            # Create/get season.
+            # Persist the complete canonical dataset atomically.
             #
-            # Season dates are intentionally left null here because
-            # bootstrap-static does not provide a canonical season
-            # start/end pair in the project contract.
+            # The ingestion run is created before this transaction so
+            # that a failed persistence attempt can still be recorded
+            # as FAILED after the transaction rolls back.
             # ----------------------------------------------------------
 
-            season = self.repository.get_season(
-                self.season_code
-            )
+            with self.repository.transaction():
+                # ----------------------------------------------------------
+                # Basic source validation.
+                # ----------------------------------------------------------
 
-            if season is None:
-                season_id = self.repository.create_season(
-                    season_code=self.season_code,
-                    status="ACTIVE",
-                    is_current=True,
-                )
-            else:
-                season_id = int(season["id"])
+                elements = bootstrap.get("elements", [])
+                teams = bootstrap.get("teams", [])
+                events = bootstrap.get("events", [])
+                element_types = bootstrap.get("element_types", [])
 
-            # ----------------------------------------------------------
-            # Build lookup tables.
-            # ----------------------------------------------------------
-
-            position_names = {
-                int(position["id"]): position.get(
-                    "singular_name"
-                )
-                for position in element_types
-                if "id" in position
-            }
-
-            team_db_ids: dict[int, int] = {}
-            player_db_ids: dict[int, int] = {}
-            gameweek_db_ids: dict[int, int] = {}
-
-            counts = {
-                "seasons": 1,
-                "gameweeks": 0,
-                "teams": 0,
-                "team_snapshots": 0,
-                "players": 0,
-                "player_snapshots": 0,
-                "fixtures": 0,
-                "player_gameweek_stats": 0,
-            }
-
-            # ----------------------------------------------------------
-            # Persist gameweeks.
-            #
-            # Batch 3 intentionally creates missing gameweeks only.
-            # Dynamic gameweek flag updates will be handled in the
-            # dedicated gameweek refresh enhancement after this batch.
-            # ----------------------------------------------------------
-
-            for event in events:
-                if "id" not in event:
-                    continue
-
-                gameweek_number = int(event["id"])
-
-                existing_gameweek = self.repository.get_gameweek(
-                    season_id,
-                    gameweek_number,
-                )
-
-                if existing_gameweek is None:
-                    gameweek_db_ids[
-                        gameweek_number
-                    ] = self.repository.create_gameweek(
-                        season_id=season_id,
-                        gameweek=gameweek_number,
-                        name=event.get("name"),
-                        deadline_time=event.get(
-                            "deadline_time"
-                        ),
-                        finished=bool(
-                            event.get("finished", False)
-                        ),
+                if not isinstance(elements, list):
+                    raise ValueError(
+                        "FPL bootstrap 'elements' is not a list."
                     )
-                    counts["gameweeks"] += 1
+
+                if not isinstance(teams, list):
+                    raise ValueError(
+                        "FPL bootstrap 'teams' is not a list."
+                    )
+
+                if not isinstance(events, list):
+                    raise ValueError(
+                        "FPL bootstrap 'events' is not a list."
+                    )
+
+                if not isinstance(element_types, list):
+                    raise ValueError(
+                        "FPL bootstrap 'element_types' is not a list."
+                    )
+
+                if not isinstance(fixtures, list):
+                    raise ValueError(
+                        "FPL fixtures payload is not a list."
+                    )
+
+                # ----------------------------------------------------------
+                # Create/get season.
+                #
+                # Season dates are intentionally left null here because
+                # bootstrap-static does not provide a canonical season
+                # start/end pair in the project contract.
+                # ----------------------------------------------------------
+
+                season = self.repository.get_season(
+                    self.season_code
+                )
+
+                if season is None:
+                    season_id = self.repository.create_season(
+                        season_code=self.season_code,
+                        status="ACTIVE",
+                        is_current=True,
+                    )
                 else:
-                    gameweek_db_ids[
-                        gameweek_number
-                    ] = int(existing_gameweek["id"])
+                    season_id = int(season["id"])
 
-            current_gameweek_id = None
-            for event in events:
-                if event.get("is_current") and "id" in event:
-                    current_gameweek_id = gameweek_db_ids.get(int(event["id"]))
-                    break
+                # ----------------------------------------------------------
+                # Build lookup tables.
+                # ----------------------------------------------------------
 
-            # ----------------------------------------------------------
-            # Persist teams and team snapshots.
-            # ----------------------------------------------------------
-
-            for team in teams:
-                if "id" not in team:
-                    continue
-
-                fpl_team_id = int(team["id"])
-
-                team_record = _build_team_record(team)
-
-                # Repository methods use explicit arguments rather than
-                # accepting the complete domain mapping.
-                team_id = self.repository.upsert_team(
-                    fpl_team_id=team_record["fpl_team_id"],
-                    name=team_record["name"],
-                    short_name=team_record.get("short_name"),
-                    code=team_record.get("code"),
-                )
-
-                team_db_ids[fpl_team_id] = team_id
-                counts["teams"] += 1
-
-                team_snapshot = _build_team_snapshot(
-                    team=team,
-                    season_id=season_id,
-                    snapshot_at=source_retrieved_at,
-                    ingestion_run_id=ingestion_run_id,
-                    team_id=team_id,
-                )
-
-                self.repository.create_team_snapshot(
-                    season_id=season_id,
-                    team_id=team_id,
-                    snapshot_at=source_retrieved_at,
-                    snapshot=team_snapshot,
-                    ingestion_run_id=ingestion_run_id,
-                )
-
-                counts["team_snapshots"] += 1
-
-            # ----------------------------------------------------------
-            # Persist players and player snapshots.
-            # ----------------------------------------------------------
-
-            for player in elements:
-                if "id" not in player:
-                    continue
-
-                fpl_player_id = int(player["id"])
-
-                player_record = _build_player_record(player)
-
-                player_id = self.repository.upsert_player(
-                    fpl_player_id=player_record["fpl_player_id"],
-                    first_name=player_record.get("first_name"),
-                    second_name=player_record.get("second_name"),
-                    web_name=player_record.get("web_name"),
-                )
-
-                player_db_ids[fpl_player_id] = player_id
-                counts["players"] += 1
-
-                team_id = team_db_ids.get(
-                    int(player["team"])
-                )
-
-                if team_id is None:
-                    raise ValueError(
-                        f"Player {fpl_player_id} references "
-                        f"unknown FPL team {player['team']}."
+                position_names = {
+                    int(position["id"]): position.get(
+                        "singular_name"
                     )
-
-                snapshot = _build_player_snapshot(
-                    player=player,
-                    season_id=season_id,
-                    snapshot_at=source_retrieved_at,
-                    ingestion_run_id=ingestion_run_id,
-                    team_id=team_id,
-                    position_name=position_names.get(
-                        int(player["element_type"])
-                    ),
-                )
-
-                # The player ID belongs to the player master table,
-                # not the team. Set it explicitly after building the
-                # snapshot structure.
-                snapshot["player_id"] = player_id
-
-                self.repository.create_player_snapshot(
-                    season_id=season_id,
-                    player_id=player_id,
-                    snapshot_at=source_retrieved_at,
-                    snapshot=snapshot,
-                    ingestion_run_id=ingestion_run_id,
-                )
-
-                counts["player_snapshots"] += 1
-
-            # ----------------------------------------------------------
-            # Persist fixtures and player-GW statistics.
-            # ----------------------------------------------------------
-
-            for fixture in fixtures:
-
-                fixture_id = fixture.get("id")
-                gameweek_number = fixture.get("event")
-                home_fpl_team_id = fixture.get("team_h")
-                away_fpl_team_id = fixture.get("team_a")
-
-                if (
-                    fixture_id is None
-                    or gameweek_number is None
-                    or home_fpl_team_id is None
-                    or away_fpl_team_id is None
-                ):
-                    continue
-
-                gameweek_id = gameweek_db_ids.get(
-                    int(gameweek_number)
-                )
-
-                home_team_id = team_db_ids.get(
-                    int(home_fpl_team_id)
-                )
-                away_team_id = team_db_ids.get(
-                    int(away_fpl_team_id)
-                )
-
-                if gameweek_id is None:
-                    raise ValueError(
-                        f"Fixture {fixture_id} references "
-                        f"unknown gameweek {gameweek_number}."
-                    )
-
-                if home_team_id is None:
-                    raise ValueError(
-                        f"Fixture {fixture_id} references "
-                        f"unknown home team "
-                        f"{home_fpl_team_id}."
-                    )
-
-                if away_team_id is None:
-                    raise ValueError(
-                        f"Fixture {fixture_id} references "
-                        f"unknown away team "
-                        f"{away_fpl_team_id}."
-                    )
-
-                fixture_record = {
-                    "fpl_fixture_id": int(fixture_id),
-                    "season_id": season_id,
-                    "gameweek_id": gameweek_id,
-                    "home_team_id": home_team_id,
-                    "away_team_id": away_team_id,
-                    "kickoff_time": fixture.get(
-                        "kickoff_time"
-                    ),
-                    "started": fixture.get("started"),
-                    "finished": fixture.get("finished"),
-                    "home_score": fixture.get(
-                        "team_h_score"
-                    ),
-                    "away_score": fixture.get(
-                        "team_a_score"
-                    ),
-                    "home_difficulty": fixture.get(
-                        "team_h_difficulty"
-                    ),
-                    "away_difficulty": fixture.get(
-                        "team_a_difficulty"
-                    ),
+                    for position in element_types
+                    if "id" in position
                 }
 
-                fixture_db_id = self.repository.upsert_fixture(
-                    season_id=season_id,
-                    fpl_fixture_id=fixture_record["fpl_fixture_id"],
-                    home_team_id=fixture_record["home_team_id"],
-                    away_team_id=fixture_record["away_team_id"],
-                    gameweek_id=fixture_record.get("gameweek_id"),
-                    kickoff_time=fixture_record.get("kickoff_time"),
-                    started=bool(fixture_record.get("started", False)),
-                    finished=bool(fixture_record.get("finished", False)),
-                    home_score=fixture_record.get("home_score"),
-                    away_score=fixture_record.get("away_score"),
-                    home_difficulty=fixture_record.get("home_difficulty"),
-                    away_difficulty=fixture_record.get("away_difficulty"),
-                )
+                team_db_ids: dict[int, int] = {}
+                player_db_ids: dict[int, int] = {}
+                gameweek_db_ids: dict[int, int] = {}
 
-                counts["fixtures"] += 1
+                counts = {
+                    "seasons": 1,
+                    "gameweeks": 0,
+                    "teams": 0,
+                    "team_snapshots": 0,
+                    "players": 0,
+                    "player_snapshots": 0,
+                    "fixtures": 0,
+                    "player_gameweek_stats": 0,
+                }
 
-                # ------------------------------------------------------
-                # Convert fixture stats into canonical player-GW rows.
-                # ------------------------------------------------------
+                # ----------------------------------------------------------
+                # Persist gameweeks.
+                #
+                # Batch 3 intentionally creates missing gameweeks only.
+                # Dynamic gameweek flag updates will be handled in the
+                # dedicated gameweek refresh enhancement after this batch.
+                # ----------------------------------------------------------
 
-                stat_records = (
-                    _build_player_gameweek_stat_records(
-                        fixture=fixture,
+                for event in events:
+                    if "id" not in event:
+                        continue
+
+                    gameweek_number = int(event["id"])
+
+                    existing_gameweek = self.repository.get_gameweek(
+                        season_id,
+                        gameweek_number,
+                    )
+
+                    if existing_gameweek is None:
+                        gameweek_db_ids[
+                            gameweek_number
+                        ] = self.repository.create_gameweek(
+                            season_id=season_id,
+                            gameweek=gameweek_number,
+                            name=event.get("name"),
+                            deadline_time=event.get(
+                                "deadline_time"
+                            ),
+                            finished=bool(
+                                event.get("finished", False)
+                            ),
+                        )
+                        counts["gameweeks"] += 1
+                    else:
+                        gameweek_db_ids[
+                            gameweek_number
+                        ] = int(existing_gameweek["id"])
+
+                current_gameweek_id = None
+                for event in events:
+                    if event.get("is_current") and "id" in event:
+                        current_gameweek_id = gameweek_db_ids.get(int(event["id"]))
+                        break
+
+                # ----------------------------------------------------------
+                # Persist teams and team snapshots.
+                # ----------------------------------------------------------
+
+                for team in teams:
+                    if "id" not in team:
+                        continue
+
+                    fpl_team_id = int(team["id"])
+
+                    team_record = _build_team_record(team)
+
+                    # Repository methods use explicit arguments rather than
+                    # accepting the complete domain mapping.
+                    team_id = self.repository.upsert_team(
+                        fpl_team_id=team_record["fpl_team_id"],
+                        name=team_record["name"],
+                        short_name=team_record.get("short_name"),
+                        code=team_record.get("code"),
+                    )
+
+                    team_db_ids[fpl_team_id] = team_id
+                    counts["teams"] += 1
+
+                    team_snapshot = _build_team_snapshot(
+                        team=team,
                         season_id=season_id,
-                        gameweek_id=gameweek_id,
-                        fixture_id=fixture_db_id,
-                        home_team_id=home_team_id,
-                        away_team_id=away_team_id,
+                        snapshot_at=source_retrieved_at,
+                        ingestion_run_id=ingestion_run_id,
+                        team_id=team_id,
+                    )
+
+                    self.repository.create_team_snapshot(
+                        season_id=season_id,
+                        team_id=team_id,
+                        snapshot_at=source_retrieved_at,
+                        snapshot=team_snapshot,
                         ingestion_run_id=ingestion_run_id,
                     )
-                )
 
-                for stat_record in stat_records:
+                    counts["team_snapshots"] += 1
 
-                    fpl_player_id = int(
-                        stat_record["player_id"]
+                # ----------------------------------------------------------
+                # Persist players and player snapshots.
+                # ----------------------------------------------------------
+
+                for player in elements:
+                    if "id" not in player:
+                        continue
+
+                    fpl_player_id = int(player["id"])
+
+                    player_record = _build_player_record(player)
+
+                    player_id = self.repository.upsert_player(
+                        fpl_player_id=player_record["fpl_player_id"],
+                        first_name=player_record.get("first_name"),
+                        second_name=player_record.get("second_name"),
+                        web_name=player_record.get("web_name"),
                     )
 
-                    # Fixture stats should reference a player known
-                    # by bootstrap-static.
-                    if (
-                        fpl_player_id
-                        not in player_db_ids
-                    ):
+                    player_db_ids[fpl_player_id] = player_id
+                    counts["players"] += 1
+
+                    team_id = team_db_ids.get(
+                        int(player["team"])
+                    )
+
+                    if team_id is None:
                         raise ValueError(
-                            f"Fixture {fixture_id} contains "
-                            f"unknown player {fpl_player_id}."
+                            f"Player {fpl_player_id} references "
+                            f"unknown FPL team {player['team']}."
                         )
 
-                    stat_record["player_id"] = (
-                        player_db_ids[fpl_player_id]
+                    snapshot = _build_player_snapshot(
+                        player=player,
+                        season_id=season_id,
+                        snapshot_at=source_retrieved_at,
+                        ingestion_run_id=ingestion_run_id,
+                        team_id=team_id,
+                        position_name=position_names.get(
+                            int(player["element_type"])
+                        ),
                     )
 
-                    self.repository.upsert_current_player_gameweek_stats(
+                    # The player ID belongs to the player master table,
+                    # not the team. Set it explicitly after building the
+                    # snapshot structure.
+                    snapshot["player_id"] = player_id
+
+                    self.repository.create_player_snapshot(
                         season_id=season_id,
-                        player_id=stat_record["player_id"],
-                        fixture_id=stat_record["fixture_id"],
-                        stats=stat_record,
-                        gameweek_id=stat_record.get("gameweek_id"),
+                        player_id=player_id,
+                        snapshot_at=source_retrieved_at,
+                        snapshot=snapshot,
                         ingestion_run_id=ingestion_run_id,
                     )
 
-                    counts["player_gameweek_stats"] += 1
+                    counts["player_snapshots"] += 1
 
-            # ----------------------------------------------------------
-            # Complete ingestion run.
-            # ----------------------------------------------------------
+                # ----------------------------------------------------------
+                # Persist fixtures and player-GW statistics.
+                # ----------------------------------------------------------
 
-            records_received = (
-                len(elements)
-                + len(teams)
-                + len(events)
-                + len(fixtures)
-            )
+                for fixture in fixtures:
 
-            records_written = (
-                counts["teams"]
-                + counts["team_snapshots"]
-                + counts["players"]
-                + counts["player_snapshots"]
-                + counts["fixtures"]
-                + counts["player_gameweek_stats"]
-            )
+                    fixture_id = fixture.get("id")
+                    gameweek_number = fixture.get("event")
+                    home_fpl_team_id = fixture.get("team_h")
+                    away_fpl_team_id = fixture.get("team_a")
 
-            completed_at = _timestamp()
-            self.repository.complete_ingestion_run(
-                ingestion_run_id=ingestion_run_id,
-                completed_at=completed_at,
-                status="SUCCESS",
-                records_received=records_received,
-                records_written=records_written,
-                records_rejected=0,
-                validation_status="PASSED",
-                error_message=None,
-            )
+                    if (
+                        fixture_id is None
+                        or gameweek_number is None
+                        or home_fpl_team_id is None
+                        or away_fpl_team_id is None
+                    ):
+                        continue
 
-            self._record_freshness_attempt(
-                "bootstrap_static", ingestion_run_id, source_retrieved_at,
-                current_gameweek_id=current_gameweek_id, successful=True,
-            )
-            self._record_freshness_attempt(
-                "fixtures", ingestion_run_id, source_retrieved_at,
-                current_gameweek_id=current_gameweek_id, successful=True,
-            )
+                    gameweek_id = gameweek_db_ids.get(
+                        int(gameweek_number)
+                    )
 
-            return RefreshReport(
-                source=self.SOURCE_NAME,
-                started_at=started_at,
-                completed_at=completed_at,
-                status="success",
-                collections={
-                    key: {
-                        "records_written": value,
+                    home_team_id = team_db_ids.get(
+                        int(home_fpl_team_id)
+                    )
+                    away_team_id = team_db_ids.get(
+                        int(away_fpl_team_id)
+                    )
+
+                    if gameweek_id is None:
+                        raise ValueError(
+                            f"Fixture {fixture_id} references "
+                            f"unknown gameweek {gameweek_number}."
+                        )
+
+                    if home_team_id is None:
+                        raise ValueError(
+                            f"Fixture {fixture_id} references "
+                            f"unknown home team "
+                            f"{home_fpl_team_id}."
+                        )
+
+                    if away_team_id is None:
+                        raise ValueError(
+                            f"Fixture {fixture_id} references "
+                            f"unknown away team "
+                            f"{away_fpl_team_id}."
+                        )
+
+                    fixture_record = {
+                        "fpl_fixture_id": int(fixture_id),
+                        "season_id": season_id,
+                        "gameweek_id": gameweek_id,
+                        "home_team_id": home_team_id,
+                        "away_team_id": away_team_id,
+                        "kickoff_time": fixture.get(
+                            "kickoff_time"
+                        ),
+                        "started": fixture.get("started"),
+                        "finished": fixture.get("finished"),
+                        "home_score": fixture.get(
+                            "team_h_score"
+                        ),
+                        "away_score": fixture.get(
+                            "team_a_score"
+                        ),
+                        "home_difficulty": fixture.get(
+                            "team_h_difficulty"
+                        ),
+                        "away_difficulty": fixture.get(
+                            "team_a_difficulty"
+                        ),
                     }
-                    for key, value in counts.items()
-                },
-            )
+
+                    fixture_db_id = self.repository.upsert_fixture(
+                        season_id=season_id,
+                        fpl_fixture_id=fixture_record["fpl_fixture_id"],
+                        home_team_id=fixture_record["home_team_id"],
+                        away_team_id=fixture_record["away_team_id"],
+                        gameweek_id=fixture_record.get("gameweek_id"),
+                        kickoff_time=fixture_record.get("kickoff_time"),
+                        started=bool(fixture_record.get("started", False)),
+                        finished=bool(fixture_record.get("finished", False)),
+                        home_score=fixture_record.get("home_score"),
+                        away_score=fixture_record.get("away_score"),
+                        home_difficulty=fixture_record.get("home_difficulty"),
+                        away_difficulty=fixture_record.get("away_difficulty"),
+                    )
+
+                    counts["fixtures"] += 1
+
+                    # ------------------------------------------------------
+                    # Convert fixture stats into canonical player-GW rows.
+                    # ------------------------------------------------------
+
+                    stat_records = (
+                        _build_player_gameweek_stat_records(
+                            fixture=fixture,
+                            season_id=season_id,
+                            gameweek_id=gameweek_id,
+                            fixture_id=fixture_db_id,
+                            home_team_id=home_team_id,
+                            away_team_id=away_team_id,
+                            ingestion_run_id=ingestion_run_id,
+                        )
+                    )
+
+                    for stat_record in stat_records:
+
+                        fpl_player_id = int(
+                            stat_record["player_id"]
+                        )
+
+                        # Fixture stats should reference a player known
+                        # by bootstrap-static.
+                        if (
+                            fpl_player_id
+                            not in player_db_ids
+                        ):
+                            raise ValueError(
+                                f"Fixture {fixture_id} contains "
+                                f"unknown player {fpl_player_id}."
+                            )
+
+                        stat_record["player_id"] = (
+                            player_db_ids[fpl_player_id]
+                        )
+
+                        self.repository.upsert_current_player_gameweek_stats(
+                            season_id=season_id,
+                            player_id=stat_record["player_id"],
+                            fixture_id=stat_record["fixture_id"],
+                            stats=stat_record,
+                            gameweek_id=stat_record.get("gameweek_id"),
+                            ingestion_run_id=ingestion_run_id,
+                        )
+
+                        counts["player_gameweek_stats"] += 1
+
+                # ----------------------------------------------------------
+                # Complete ingestion run.
+                # ----------------------------------------------------------
+
+                records_received = (
+                    len(elements)
+                    + len(teams)
+                    + len(events)
+                    + len(fixtures)
+                )
+
+                records_written = (
+                    counts["teams"]
+                    + counts["team_snapshots"]
+                    + counts["players"]
+                    + counts["player_snapshots"]
+                    + counts["fixtures"]
+                    + counts["player_gameweek_stats"]
+                )
+
+                completed_at = _timestamp()
+                self.repository.complete_ingestion_run(
+                    ingestion_run_id=ingestion_run_id,
+                    completed_at=completed_at,
+                    status="SUCCESS",
+                    records_received=records_received,
+                    records_written=records_written,
+                    records_rejected=0,
+                    validation_status="PASSED",
+                    error_message=None,
+                )
+
+                self._record_freshness_attempt(
+                    "bootstrap_static", ingestion_run_id, source_retrieved_at,
+                    current_gameweek_id=current_gameweek_id, successful=True,
+                )
+                self._record_freshness_attempt(
+                    "fixtures", ingestion_run_id, source_retrieved_at,
+                    current_gameweek_id=current_gameweek_id, successful=True,
+                )
+
+                return RefreshReport(
+                    source=self.SOURCE_NAME,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                    status="success",
+                    collections={
+                        key: {
+                            "records_written": value,
+                        }
+                        for key, value in counts.items()
+                    },
+                )
 
         except Exception as exc:
 

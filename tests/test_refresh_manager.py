@@ -718,6 +718,147 @@ def test_global_refresh_is_repeatable(
     assert len(ingestion_runs) == 2
 
 
+def test_global_refresh_rolls_back_partial_sqlite_persistence(
+    tmp_path,
+):
+    """A persistence failure must roll back the entire canonical refresh."""
+
+    class FailingRepository(SQLiteRepository):
+        def __init__(self, db_path):
+            initialize_database(db_path)
+            super().__init__(db_path)
+            self.fail_current_stats = True
+
+        def upsert_current_player_gameweek_stats(self, *args, **kwargs):
+            if self.fail_current_stats:
+                raise RuntimeError(
+                    "simulated player-GW persistence failure"
+                )
+            return super().upsert_current_player_gameweek_stats(
+                *args,
+                **kwargs,
+            )
+
+    # Use a repository owned by this test so the failure simulation cannot
+    # interfere with the shared test fixture lifecycle.
+    failing_repository = FailingRepository(tmp_path / "fpl.db")
+
+    try:
+        source = FakeFPLSource()
+        manager = FPLRefreshManager(
+            source,
+            repository=failing_repository,
+        )
+
+        report = manager.refresh_global_data()
+
+        assert report.status == "failed"
+        assert (
+            "simulated player-GW persistence failure"
+            in report.error
+        )
+
+        # All canonical writes from the failed refresh must have rolled back.
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM seasons"
+        )["count"] == 0
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM gameweeks"
+        )["count"] == 0
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM teams"
+        )["count"] == 0
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM team_snapshots"
+        )["count"] == 0
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM players"
+        )["count"] == 0
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM player_snapshots"
+        )["count"] == 0
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM fixtures"
+        )["count"] == 0
+        assert failing_repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM current_player_gameweek_stats"
+        )["count"] == 0
+
+        # The ingestion audit record must survive the rollback and show FAILED.
+        ingestion_run = failing_repository.fetch_one(
+            "SELECT * FROM ingestion_runs ORDER BY id DESC LIMIT 1"
+        )
+        assert ingestion_run is not None
+        assert ingestion_run["status"] == "FAILED"
+        assert ingestion_run["validation_status"] == "FAILED"
+
+        # The failed attempt must not be reported as a successful refresh.
+        for dataset_name in ("bootstrap_static", "fixtures"):
+            freshness = failing_repository.get_dataset_freshness(
+                dataset_name
+            )
+            assert freshness is not None
+            assert freshness["last_successful_ingestion_id"] is None
+            assert freshness["freshness_status"] == "STALE"
+    finally:
+        failing_repository.close()
+
+
+def test_global_refresh_recovers_after_atomic_persistence_failure(
+    tmp_path,
+):
+    """A later successful refresh should work normally after a rolled-back failure."""
+
+    class FailOnceRepository(SQLiteRepository):
+        def __init__(self, db_path):
+            initialize_database(db_path)
+            super().__init__(db_path)
+            self.fail_once = True
+
+        def upsert_current_player_gameweek_stats(self, *args, **kwargs):
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("fail once")
+            return super().upsert_current_player_gameweek_stats(
+                *args,
+                **kwargs,
+            )
+
+    repository = FailOnceRepository(tmp_path / "fpl.db")
+
+    try:
+        manager = FPLRefreshManager(
+            FakeFPLSource(),
+            repository=repository,
+        )
+
+        first_report = manager.refresh_global_data()
+        second_report = manager.refresh_global_data()
+
+        assert first_report.status == "failed"
+        assert second_report.status == "success"
+
+        assert repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM teams"
+        )["count"] == 2
+        assert repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM players"
+        )["count"] == 2
+        assert repository.fetch_one(
+            "SELECT COUNT(*) AS count FROM fixtures"
+        )["count"] == 1
+
+        ingestion_runs = repository.fetch_all(
+            "SELECT status FROM ingestion_runs ORDER BY id"
+        )
+        assert [row["status"] for row in ingestion_runs] == [
+            "FAILED",
+            "SUCCESS",
+        ]
+    finally:
+        repository.close()
+
+
 def test_global_refresh_failure_is_recorded(
     sqlite_repository,
 ):
