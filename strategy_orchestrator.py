@@ -36,6 +36,7 @@ from chip_engine import ChipScenarioEvaluation
 from dream_team_engine import DreamTeamGap, DreamTeamSnapshot
 from rival_engine import RivalSnapshot, identify_nearest_rivals
 from multi_gw_strategy import MultiGWStrategicPlan, evaluate_multi_gw_options
+from strategy_scenario_engine import CrossHorizonStrategyPlan, evaluate_cross_horizon_strategies
 from transfer_engine import TransferCandidate, generate_transfer_candidates
 
 
@@ -119,6 +120,7 @@ class StrategicDecision:
     dream_team_selection_policy: str = DREAM_TEAM_SELECTION_POLICY
     engine_version: str = ENGINE_VERSION
     projection_model_version: str | None = None
+    cross_horizon_strategy: CrossHorizonStrategyPlan | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -346,6 +348,29 @@ def build_strategic_decision(
         None,
     )
 
+    cross_horizon_strategy = evaluate_cross_horizon_strategies(
+        decision_gameweek=decision_gameweek,
+        target_gameweek=target_gameweek,
+        manager_squad=squad,
+        projections=projections,
+        options=(
+            option
+            for option in options
+            if option.option_type in {"roll", "transfer"}
+        ),
+        free_transfers_before=int(manager_state.free_transfers),
+    )
+
+    if cross_horizon_strategy.selected_option_id is not None:
+        selected = next(
+            (
+                item
+                for item in options
+                if item.option_id == cross_horizon_strategy.selected_option_id
+            ),
+            selected,
+        )
+
     if selected is None:
         warnings.append("No complete strategic option was available for selection.")
     if not captains:
@@ -372,6 +397,7 @@ def build_strategic_decision(
         data_complete=data_complete,
         warnings=tuple(dict.fromkeys(warnings)),
         dream_team_selection_policy=DREAM_TEAM_SELECTION_POLICY,
+        cross_horizon_strategy=cross_horizon_strategy,
     )
 
 def build_strategic_decision_from_production_projection(
@@ -442,4 +468,5 @@ def build_strategic_decision_from_production_projection(
         dream_team_selection_policy=decision.dream_team_selection_policy,
         engine_version=PRODUCTION_PROJECTION_ENGINE_VERSION,
         projection_model_version=projection_result.model_version,
+        cross_horizon_strategy=decision.cross_horizon_strategy,
     )
