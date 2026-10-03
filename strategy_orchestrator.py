@@ -24,6 +24,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Sequence
 
+from production_projection import ProductionProjectionResult
+
 from captain_engine import (
     CaptainCandidate,
     CaptaincyHorizonContext,
@@ -38,6 +40,7 @@ from transfer_engine import TransferCandidate, generate_transfer_candidates
 
 
 ENGINE_VERSION = "strategy_orchestrator_v1_2"
+PRODUCTION_PROJECTION_ENGINE_VERSION = "strategy_orchestrator_v1_3"
 
 # Architectural invariant: Dream Team data is benchmark/learning context only.
 # It must never become a player-selection input for the Strategist.
@@ -115,6 +118,7 @@ class StrategicDecision:
     warnings: tuple[str, ...]
     dream_team_selection_policy: str = DREAM_TEAM_SELECTION_POLICY
     engine_version: str = ENGINE_VERSION
+    projection_model_version: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -368,4 +372,74 @@ def build_strategic_decision(
         data_complete=data_complete,
         warnings=tuple(dict.fromkeys(warnings)),
         dream_team_selection_policy=DREAM_TEAM_SELECTION_POLICY,
+    )
+
+def build_strategic_decision_from_production_projection(
+    *,
+    manager_state: Any,
+    market_players: list[dict[str, Any]],
+    projection_result: ProductionProjectionResult,
+    available_chips: Sequence[str] = (),
+    chip_evaluations: Sequence[ChipScenarioEvaluation] = (),
+    rival_context: RivalDecisionContext | None = None,
+    dream_context: DreamTeamDecisionContext | None = None,
+    fixture_count_by_gameweek: dict[int, int] | None = None,
+) -> StrategicDecision:
+    """Build a strategic decision from the authoritative 18A projection result.
+
+    This is the production-facing adapter for Batch 18A -> 18B. It keeps
+    ``build_strategic_decision`` backward-compatible while making the
+    production projection contract explicit at the orchestrator boundary.
+    The adapter validates that the projection horizon is exactly the horizon
+    being evaluated and propagates projection completeness/warnings into the
+    final decision.
+    """
+
+    if not isinstance(projection_result, ProductionProjectionResult):
+        raise TypeError(
+            "projection_result must be a ProductionProjectionResult."
+        )
+
+    horizon = tuple(int(gameweek) for gameweek in projection_result.horizon_gameweeks)
+    if not horizon:
+        raise ValueError("projection_result must contain at least one Gameweek.")
+
+    target_gameweek = int(projection_result.target_gameweek)
+    if horizon[0] != target_gameweek:
+        raise ValueError(
+            "Projection result horizon must start at its target Gameweek."
+        )
+
+    decision = build_strategic_decision(
+        manager_state=manager_state,
+        market_players=market_players,
+        projections=projection_result.projections,
+        horizon_gameweeks=horizon,
+        available_chips=available_chips,
+        chip_evaluations=chip_evaluations,
+        rival_context=rival_context,
+        dream_context=dream_context,
+        fixture_count_by_gameweek=fixture_count_by_gameweek,
+    )
+
+    projection_warnings = tuple(projection_result.warnings)
+    warnings = tuple(dict.fromkeys(decision.warnings + projection_warnings))
+
+    return StrategicDecision(
+        decision_gameweek=decision.decision_gameweek,
+        target_gameweek=decision.target_gameweek,
+        selected_option=decision.selected_option,
+        options=decision.options,
+        transfer_candidates=decision.transfer_candidates,
+        captain_candidates=decision.captain_candidates,
+        captaincy_horizon=decision.captaincy_horizon,
+        chip_opportunities=decision.chip_opportunities,
+        multi_gw_plan=decision.multi_gw_plan,
+        rival_context=decision.rival_context,
+        dream_context=decision.dream_context,
+        data_complete=bool(decision.data_complete and projection_result.data_complete),
+        warnings=warnings,
+        dream_team_selection_policy=decision.dream_team_selection_policy,
+        engine_version=PRODUCTION_PROJECTION_ENGINE_VERSION,
+        projection_model_version=projection_result.model_version,
     )
